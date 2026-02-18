@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0",
+  "scenario_id": "baseline_seed0",
+  "created_at": "2026-02-17T17:10:17.031186+00:00",
+  "sim_config": {
+    "seed": 0,
+    "T": 50,
+    "gamma": 0.8,
+    "shock_prob": 0.001,
+    "init_inv": 0.0,
+    "init_supply": 100.0,
+    "init_demand": 1.0
+  },
+  "description": "SupplySim scenario export",
+  "baseline_scenario_id": null
+}

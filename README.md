@@ -7,6 +7,11 @@ pip install -r requirements.txt
 pip install -e ./TGB/
 ```
 
+If you are on Linux with CUDA 11.7 and need the original GPU wheel stack:
+```
+pip install -r requirements.txt -r requirements-cu117.txt
+```
+
 ## File Description
 - **register_data**: convert raw data into standardized transaction-level data, construct hypergraphs 
 - **TGB/examples/linkproppred/general**: run experiments
@@ -69,6 +74,14 @@ python model_experiments.py --train_with_fixed_samples --model graphmixer --ARGS
 ```
 
 To include the inventory module, simply add the flag `--use_inventory`. There are also a number of other optional parameters related to the inventory module. For example, we find that providing initial attention weights via `--att_weights` helps with model training. To run an experiment where the inventory module's attention weights are set to the ground-truth production functions, the functions should be provided via `--prod_graph {PROD_GRAPH_FILE}.pkl`, and use `--fix_inventory` so that the attention weights are not updated during training (see Appendix C.2 and Table 6).
+
+## Explainable Dashboard (new)
+An explainable replay dashboard stack is available under `dashboard/`:
+- `scripts/export_supplysim_scenario.py`: exports versioned scenario packages to `artifacts/scenarios/{scenario_id}`.
+- `dashboard/backend`: FastAPI API for scenario replay, graph views, explainability, and baseline comparison.
+- `dashboard/frontend`: React + TypeScript UI for control-tower-style visualization.
+
+See `dashboard/README.md` for end-to-end local run instructions.
 
 ## Citation
 If you use this work, please cite:

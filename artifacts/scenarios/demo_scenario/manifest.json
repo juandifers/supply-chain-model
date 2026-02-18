@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0",
+  "scenario_id": "demo_scenario",
+  "created_at": "2026-02-17T16:22:15.859784+00:00",
+  "sim_config": {
+    "seed": 1,
+    "T": 20,
+    "gamma": 0.7,
+    "shock_prob": 0.003,
+    "init_inv": 0.0,
+    "init_supply": 100.0,
+    "init_demand": 1.0
+  },
+  "description": "demo comparison scenario",
+  "baseline_scenario_id": "demo_baseline"
+}

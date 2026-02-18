@@ -1,0 +1,18 @@
+# Optional CUDA 11.7 install profile (Linux GPU), kept separate from the default
+# cross-platform requirements.txt.
+#
+# Usage:
+#   pip install -r requirements.txt -r requirements-cu117.txt
+#
+# Note: these wheels are hosted outside PyPI, so we include index/find-links.
+--extra-index-url https://download.pytorch.org/whl/cu117
+-f https://data.pyg.org/whl/torch-2.0.0+cu117.html
+
+torch==2.0.0+cu117
+pyg-lib==0.4.0+pt20cu117
+torch-cluster==1.6.3+pt20cu117
+torch-scatter==2.1.2+pt20cu117
+torch-sparse==0.6.18+pt20cu117
+torch-spline-conv==1.2.2+pt20cu117
+torch_geometric==2.3.0
+triton==2.0.0
