@@ -286,9 +286,22 @@ def explain_timestep(data: ScenarioData, t: int, top_k: int = 10) -> Dict:
         "active_exogenous_shocks": int(kpi.get("active_exogenous_shocks", 0)),
     }
 
+    budget_remaining_raw = kpi.get("expedite_budget_remaining")
+    budget_remaining = None
+    if budget_remaining_raw is not None and not pd.isna(budget_remaining_raw):
+        budget_remaining = float(np.round(float(budget_remaining_raw), 6))
+
+    expedite_summary = {
+        "expedite_cost_t": float(np.round(float(kpi.get("expedite_cost_t", 0.0)), 6)),
+        "expedite_cost_cum": float(np.round(float(kpi.get("expedite_cost_cum", 0.0)), 6)),
+        "expedite_units_added_t": float(np.round(float(kpi.get("expedite_units_added_t", 0.0)), 6)),
+        "expedite_budget_remaining": budget_remaining,
+    }
+
     return {
         "t": int(t),
         "shock_summary": shock_summary,
+        "expedite_summary": expedite_summary,
         "ripple_products_top_k": ripple_products,
         "critical_firms_top_k": critical_firms,
         "paths": paths,

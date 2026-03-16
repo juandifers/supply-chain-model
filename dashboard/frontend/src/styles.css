@@ -104,6 +104,13 @@ p {
   margin-top: 0.65rem;
 }
 
+.controls-kpi-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.65rem;
+}
+
 .control-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(180px, 1fr));

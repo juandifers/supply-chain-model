@@ -29,6 +29,19 @@ export function ReplayControls({ kpis }: ReplayControlsProps) {
     return kpis.reduce((best, row) => (row.shock_exposure > best.shock_exposure ? row : best), kpis[0]).t
   }, [kpis, tMin])
 
+  const activeKpi = useMemo(() => kpis.find((row) => row.t === t), [kpis, t])
+
+  const expediteCostT =
+    activeKpi && typeof activeKpi.expedite_cost_t === 'number' ? activeKpi.expedite_cost_t : 0
+  const expediteCostCum =
+    activeKpi && typeof activeKpi.expedite_cost_cum === 'number' ? activeKpi.expedite_cost_cum : 0
+  const expediteUnitsT =
+    activeKpi && typeof activeKpi.expedite_units_added_t === 'number' ? activeKpi.expedite_units_added_t : 0
+  const budgetRemaining =
+    activeKpi && typeof activeKpi.expedite_budget_remaining === 'number'
+      ? activeKpi.expedite_budget_remaining
+      : null
+
   return (
     <section className="panel controls-panel">
       <div className="controls-top">
@@ -37,6 +50,15 @@ export function ReplayControls({ kpis }: ReplayControlsProps) {
         <button onClick={() => stepForward()}>Step +1</button>
         <button onClick={() => setT(shockPeakT)}>Jump To Shock Peak</button>
         <span className="pill">t={t}</span>
+      </div>
+
+      <div className="controls-kpi-strip">
+        <span className="pill">Expedite Cost t: {expediteCostT.toFixed(1)}</span>
+        <span className="pill">Expedite Units t: {expediteUnitsT.toFixed(1)}</span>
+        <span className="pill">Expedite Cost Cum: {expediteCostCum.toFixed(1)}</span>
+        <span className="pill">
+          Budget Remaining: {budgetRemaining === null ? 'unlimited' : budgetRemaining.toFixed(1)}
+        </span>
       </div>
 
       <div className="slider-row">

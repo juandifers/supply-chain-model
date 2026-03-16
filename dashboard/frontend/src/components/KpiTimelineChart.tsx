@@ -7,7 +7,13 @@ type KpiTimelineChartProps = {
 }
 
 export function KpiTimelineChart({ kpis, activeT }: KpiTimelineChartProps) {
+  const toNumber = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0)
+  const toOptionalNumber = (value: unknown): number | null =>
+    typeof value === 'number' && Number.isFinite(value) ? value : null
+
   const t = kpis.map((x) => x.t)
+  const expediteCostT = kpis.map((x) => toNumber(x.expedite_cost_t))
+  const expediteBudgetRemaining = kpis.map((x) => toOptionalNumber(x.expedite_budget_remaining))
 
   const option = {
     animationDuration: 500,
@@ -23,6 +29,7 @@ export function KpiTimelineChart({ kpis, activeT }: KpiTimelineChartProps) {
       { type: 'value', gridIndex: 0, axisLabel: { color: '#d8d3c5' }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.1)' } } },
       { type: 'value', gridIndex: 1, axisLabel: { color: '#d8d3c5' }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.1)' } } },
       { type: 'value', gridIndex: 2, min: 0, max: 1, axisLabel: { color: '#d8d3c5' }, splitLine: { lineStyle: { color: 'rgba(255,255,255,0.1)' } } },
+      { type: 'value', gridIndex: 1, position: 'right', axisLabel: { color: '#d8d3c5' }, splitLine: { show: false } },
     ],
     series: [
       {
@@ -51,6 +58,24 @@ export function KpiTimelineChart({ kpis, activeT }: KpiTimelineChartProps) {
         yAxisIndex: 1,
         data: kpis.map((x) => x.consumer_backlog_units),
         lineStyle: { color: '#ff5f6d', width: 2 },
+      },
+      {
+        name: 'Expedite Cost t',
+        type: 'line',
+        smooth: true,
+        xAxisIndex: 1,
+        yAxisIndex: 3,
+        data: expediteCostT,
+        lineStyle: { color: '#f7c948', width: 2 },
+      },
+      {
+        name: 'Expedite Budget Rem',
+        type: 'line',
+        smooth: true,
+        xAxisIndex: 1,
+        yAxisIndex: 3,
+        data: expediteBudgetRemaining,
+        lineStyle: { color: '#4fd1c5', width: 1.8, type: 'dashed' },
       },
       {
         name: 'Shock Exposure',

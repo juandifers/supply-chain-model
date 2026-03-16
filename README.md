@@ -1,90 +1,164 @@
-# Learning production functions for supply chain networks
-This repo contains code for our [paper](https://arxiv.org/abs/2407.18772), "Learning Production Functions for Supply Chains with Graph Neural Networks", accepted to AAAI 2025, AI for Social Impact Track (oral). Our code extends code from the [TGB](https://github.com/shenyangHuang/TGB) and [TGB_Baselines](https://github.com/fpour/TGB_Baselines) repositories. 
+# SupplySim Thesis Workspace
 
-## Installation
-```
+This repository started from the codebase for our AAAI 2025 paper, ["Learning Production Functions for Supply Chains with Graph Neural Networks"](https://arxiv.org/abs/2407.18772), and vendors a fork of [TGB](https://github.com/shenyangHuang/TGB) plus related baseline code. At the current thesis stage, the active project is the explainable SupplySim replay dashboard and scenario-export pipeline. Most day-to-day work should happen outside the upstream `TGB/` tree.
+
+## Agent Orientation
+
+If you are a new agent or collaborator, use these defaults:
+
+- Start with `scripts/`, `dashboard/backend/`, `dashboard/frontend/`, and `artifacts/scenarios/`.
+- Assume the current thesis focus is scenario replay, explainability, and baseline comparison, not reproducing the full paper training stack.
+- Only work inside `TGB/` when the task is explicitly about simulator internals or the original paper experiments.
+- Treat `dashboard/frontend/node_modules/`, `dashboard/frontend/dist/`, `__pycache__/`, and ad hoc exports in `artifacts/` or the repo root as generated artifacts, not primary source files.
+
+## Current Thesis Focus
+
+The active workflow in this repo is:
+
+1. Run SupplySim through a stepwise wrapper.
+2. Export a versioned scenario package.
+3. Load that package in the backend.
+4. Explore it in the frontend replay and comparison UI.
+
+The key files and folders for that workflow are:
+
+- `scripts/supplysim_env.py`: step-by-step wrapper around `TGB/modules/synthetic_data.py` with KPI tracking and intervention hooks.
+- `scripts/export_supplysim_scenario.py`: exports a simulation run into `artifacts/scenarios/{scenario_id}`.
+- `artifacts/scenarios/`: versioned scenario packages used by the backend and frontend. Checked-in examples currently include `baseline_seed0`, `scenario_seed1`, `demo_baseline`, and `demo_scenario`.
+- `dashboard/backend/`: FastAPI API for scenario discovery, summaries, KPI slices, graph replay, explainability, and baseline comparison.
+- `dashboard/frontend/`: React + TypeScript control-tower UI for scenario replay and comparison.
+
+Unless a task explicitly mentions model training, dataset registration, or paper reproduction, this is the part of the repo you probably want.
+
+## Active Vs Legacy Areas
+
+### Active now
+
+- `scripts/`
+  - Runtime wrappers and scenario export utilities for the thesis dashboard workflow.
+- `artifacts/scenarios/`
+  - Scenario packages loaded by the backend by default.
+- `dashboard/backend/app/`
+  - API entry points and services.
+- `dashboard/backend/tests/`
+  - Backend tests for scenario loading, schema validation, explainability, and comparison.
+- `dashboard/frontend/src/`
+  - Replay UI, comparison page, charts, and graph/explain panels.
+
+### Kept mainly for upstream or paper-reference purposes
+
+- `TGB/`
+  - Vendored upstream research code. The main currently reused dependency is `TGB/modules/synthetic_data.py`.
+- `TGB/examples/linkproppred/general/`
+  - Original experiment runners for link prediction and model evaluation.
+- `TGB/tgb/`
+  - Dataset, evaluation, and utility code from the original research stack.
+- `register_data/`
+  - Paper-era preprocessing and hypergraph registration scripts for proprietary real-world datasets.
+- `synthetic_data/`
+  - Released synthetic CSV / pickle artifacts from the paper workflow. Useful as reference, but not required for the dashboard scenario pipeline.
+
+## Scenario Package Contract
+
+Each scenario under `artifacts/scenarios/{scenario_id}` is a self-contained package that the backend validates and serves. In practice, each package contains:
+
+- `manifest.json`
+  - Scenario metadata, schema version, simulation config, description, and optional `baseline_scenario_id`.
+- `kpi_history.csv`
+  - Timestep KPI history for replay and charting.
+- `transactions.csv`
+  - Transaction-level flow data over time.
+- `product_graph.csv`, `product_nodes.csv`, `firm_nodes.csv`, `firm_supplier_edges.csv`
+  - Static network structure used for graph views and lookup tables.
+- `demand_timeseries.csv`, `exog_supply_timeseries.csv`
+  - Demand and exogenous supply traces.
+- `per_product_timeseries.csv`, `per_firm_timeseries.csv`
+  - Derived replay/explainability views.
+
+The schema is enforced in `dashboard/backend/app/scenario_schema.py`.
+
+## Environment And Local Runbook
+
+### Python environment
+
+Install the base Python dependencies from the repo root:
+
+```bash
 pip install -r requirements.txt
 pip install -e ./TGB/
 ```
 
-If you are on Linux with CUDA 11.7 and need the original GPU wheel stack:
-```
-pip install -r requirements.txt -r requirements-cu117.txt
-```
+If you are using the local repo virtualenv, existing commands in this project often use `./venv/bin/python ...`.
 
-## File Description
-- **register_data**: convert raw data into standardized transaction-level data, construct hypergraphs 
-- **TGB/examples/linkproppred/general**: run experiments
-- **TGB/modules**: model architecture and training modules 
-- **TGB/tgb/datasets**: pre- and post-processed datasets 
-- **TGB/tgb/linkproppred**: dataset, logging, evaluation, and negative sampling frameworks
-- **TGB/tgb/utils**: constants and utils for experiments
+`requirements-cu117.txt` is only needed for the older CUDA 11.7 training stack and is not required for the dashboard workflow.
 
-## Data
-We run experiments on the two real-world supply chain datasets and three synthetic datasets from our simulator, SupplySim: a standard setting with high exogenous supply (“SS-std”), a setting with shocks to exogenous supply (“SS-shocks”), and a setting with missing transactions (“SS-missing”). We release synthetic datasets in this repository, but we are not able to release the real-world datasets due to their proprietary nature. 
+### Export a scenario
 
-### Generate synthetic datasets
-SupplySim is implemented in `./TGB/modules/synthetic_data.py`. This file contains code to generate static graphs, generate exogenous supply and demand schedules, and generate the time-varying transactions. See Section 3.2 and Appendix B.2 for details. Once the transactions are generated, create a new directory called `{DATASET_NAME}` in `./TGB/tgb/datasets/`, and save the transactions as `{DATASET_NAME}_transactions.csv`.
-
-### Preprocess real-world data
-We also built pipelines to work with real-world datasets (Tesla and SEM). See Section 3.1 and Appendix B.1 for details on data sources. 
-First, create a directory named `{DATASET_NAME}` in the `./TGB/tgb/datasets/` directory and place the raw CSV files inside. Make sure the raw CSV file contains transaction-level information including but not limited to time, supplier, buyer, product hs code, and amount (measured in quntity, weight, price, or etc.).  
-
-Next, transform the raw data into the standardized format `{DATASET_NAME}_transactions.csv` by running the following command in the root directory:
-```
-python ./register_data/preprocess_{DATASET_NAME}.py --ARGS
-```
-This preprocessing file will differ slightly across datasets based on dataset properties. 
-
-### Prepare data for model experiments
-Finally, transform the transactions data, saved as `{DATASET_NAME}_transactions.csv` for both synthetic and real-world data, into the format expected by model experiments (e.g., represent as hypergraph, do negative sampling). To do this, run the following command in the root directory: 
-```
-python ./register_data/register_hypergraph.py --ARGS
+```bash
+./venv/bin/python scripts/export_supplysim_scenario.py --seed 0 --T 50 --scenario-id baseline_seed0
+./venv/bin/python scripts/export_supplysim_scenario.py --seed 1 --T 50 --gamma 0.7 --shock-prob 0.003 --scenario-id scenario_seed1 --baseline-scenario-id baseline_seed0
 ```
 
-This command will generate files including the edgelist, sampled negatives for the train/val/test splits, and supplementary metadata (e.g., mapping fom node IDs to firm & product names).
+By default, exports land in:
 
-## Model Experiments
-The repository supports a large variety of training setups, so here we list the commands for running model experiments described in the submission. 
-
-### Learning production functions
-`./TGB/modules/prod_learning.py` contains code to test the inventory module and different baseline methods at learning production functions. In the paper, we reported three baselines including temporal correlations, PMI, and node2vec, and reported results when learning attention directly and when using product embeddings (see Table 1). For example, if we use 
-```
-compare_methods_on_data('sem', ['corr', 'pmi', 'node2vec', 'inventory'], save_results=True)
-```
-we will obtain results on the SEM dataset for those four methods, and results are saved.
-
-### Predicting future edges
-For these experiments, `cd` into the `./TGB/examples/linkproppred/general/` directory. In the commands below, remember to specify your dataset of interest, and if applicable utilize hyperparameters reported in Appendix C.2 Table 4.
-
-To run Edgebank, use the following command:
-```
-python test_hyper_edgebank.py
+```bash
+artifacts/scenarios/{scenario_id}
 ```
 
-To run SC-TGN, use the following command:
-```
-python model_experiments.py --train_with_fixed_samples --model tgnpl --memory_name tgnpl --emb_name attn --ARGS
-``` 
-Other variations of above including static, graph transformer, SC-TGN (id) replace `--memory_name` and `--emb_name` arguments with `static` and `id`, `static` and `attn`, and `tgnpl` and `id`, respectively. The model is comparable with the original TGN (Huang et al., 2023), if one removes `--train_with_fixed_samples` and adds the arguments `--init_memory_not_learnable`,  `--update_penalty 0`, and `--skip_amount` to the above command (see comparison of SC-TGN vs TGN in Appendix A.2).
+### Run the backend
 
-To run SC-GraphMixer, use the following command:
-```
-python model_experiments.py --train_with_fixed_samples --model graphmixer --ARGS
+```bash
+cd dashboard/backend
+pip install -r requirements.txt
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-To include the inventory module, simply add the flag `--use_inventory`. There are also a number of other optional parameters related to the inventory module. For example, we find that providing initial attention weights via `--att_weights` helps with model training. To run an experiment where the inventory module's attention weights are set to the ground-truth production functions, the functions should be provided via `--prod_graph {PROD_GRAPH_FILE}.pkl`, and use `--fix_inventory` so that the attention weights are not updated during training (see Appendix C.2 and Table 6).
+The backend reads scenarios from `artifacts/scenarios/` by default. Override with:
 
-## Explainable Dashboard (new)
-An explainable replay dashboard stack is available under `dashboard/`:
-- `scripts/export_supplysim_scenario.py`: exports versioned scenario packages to `artifacts/scenarios/{scenario_id}`.
-- `dashboard/backend`: FastAPI API for scenario replay, graph views, explainability, and baseline comparison.
-- `dashboard/frontend`: React + TypeScript UI for control-tower-style visualization.
+```bash
+export SUPPLYSIM_SCENARIO_ROOT=/absolute/path/to/artifacts/scenarios
+```
 
-See `dashboard/README.md` for end-to-end local run instructions.
+### Run the frontend
+
+```bash
+cd dashboard/frontend
+npm install
+npm run dev
+```
+
+The frontend expects the backend at `http://localhost:8000` unless `VITE_API_BASE_URL` is set.
+
+### Tests
+
+Backend:
+
+```bash
+pytest dashboard/backend/tests -q
+```
+
+Frontend:
+
+```bash
+cd dashboard/frontend
+npm run test
+npm run test:e2e
+```
+
+## Paper And Upstream Context
+
+This repo still contains the original paper-oriented structure and can still be used for that work when needed:
+
+- Synthetic simulator core: `TGB/modules/synthetic_data.py`
+- Model training / experiment entry points: `TGB/examples/linkproppred/general/`
+- Data preprocessing / hypergraph registration: `register_data/`
+
+We ran the original research on two proprietary real-world datasets plus synthetic SupplySim variants. The real-world datasets are not included here.
 
 ## Citation
+
 If you use this work, please cite:
+
 ```tex
 @inproceedings{chang2025supplychain,
   author  = {Serina Chang and Zhiyin Lin and Benjamin Yan and Swapnil Bembde and Qi Xiu and Chi Heem Wong and Yu Qin and Frank Kloster and Alex Luo and Raj Palleti and Jure Leskovec},
@@ -92,3 +166,4 @@ If you use this work, please cite:
   booktitle = {Proceedings of the 39th Annual AAAI Conference on Artificial Intelligence},
   year    = {2025},
 }
+```

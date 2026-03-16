@@ -33,6 +33,22 @@ export function ExplainPanel({ explain, onSelectPathProduct }: ExplainPanelProps
               <span>Worst Shock Product</span>
               <strong>{payload.shock_summary.worst_shocked_product ?? '-'}</strong>
             </div>
+            <div className="metric-row">
+              <span>Expedite Cost (t)</span>
+              <strong>{(payload.expedite_summary?.expedite_cost_t ?? 0).toFixed(1)}</strong>
+            </div>
+            <div className="metric-row">
+              <span>Expedite Units (t)</span>
+              <strong>{(payload.expedite_summary?.expedite_units_added_t ?? 0).toFixed(1)}</strong>
+            </div>
+            <div className="metric-row">
+              <span>Expedite Budget Left</span>
+              <strong>
+                {payload.expedite_summary?.expedite_budget_remaining == null
+                  ? 'unlimited'
+                  : payload.expedite_summary.expedite_budget_remaining.toFixed(1)}
+              </strong>
+            </div>
           </div>
 
           <div className="explain-block">

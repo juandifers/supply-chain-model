@@ -14,6 +14,9 @@ DEFAULT_COMPARE_METRICS = [
     "consumer_backlog_units",
     "consumer_cumulative_fill_rate",
     "shock_exposure",
+    "expedite_cost_t",
+    "expedite_cost_cum",
+    "expedite_units_added_t",
 ]
 
 
@@ -22,9 +25,19 @@ def _align_kpis(
     scenario: pd.DataFrame,
     metrics: List[str],
 ) -> pd.DataFrame:
+    b = baseline.copy()
+    s = scenario.copy()
+    for m in metrics:
+        if m not in b.columns:
+            b[m] = 0.0
+        if m not in s.columns:
+            s[m] = 0.0
+        b[m] = pd.to_numeric(b[m], errors="coerce").fillna(0.0)
+        s[m] = pd.to_numeric(s[m], errors="coerce").fillna(0.0)
+
     keep_cols = ["t"] + metrics
-    b = baseline[keep_cols].copy()
-    s = scenario[keep_cols].copy()
+    b = b[keep_cols].copy()
+    s = s[keep_cols].copy()
     merged = pd.merge(b, s, on="t", how="inner", suffixes=("_baseline", "_scenario"))
     merged = merged.sort_values("t").reset_index(drop=True)
 

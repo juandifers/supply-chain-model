@@ -30,7 +30,11 @@ export type KPIRow = {
   consumer_cumulative_fill_rate: number
   shock_exposure: number
   active_exogenous_shocks: number
-  [key: string]: string | number | null
+  expedite_cost_t?: number | null
+  expedite_cost_cum?: number | null
+  expedite_units_added_t?: number | null
+  expedite_budget_remaining?: number | null
+  [key: string]: string | number | null | undefined
 }
 
 export type GraphNode = {
@@ -80,6 +84,12 @@ export type ExplainResponse = {
       worst_shock_severity: number
       shock_exposure: number
       active_exogenous_shocks: number
+    }
+    expedite_summary?: {
+      expedite_cost_t: number
+      expedite_cost_cum: number
+      expedite_units_added_t: number
+      expedite_budget_remaining: number | null
     }
     ripple_products_top_k: Array<{
       product_id: number

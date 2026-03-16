@@ -56,6 +56,18 @@ def validate_manifest(manifest: Dict[str, Any]) -> List[str]:
         errors.append("sim_config.gamma must be numeric")
     if "shock_prob" in sim_config and not _is_number(sim_config["shock_prob"]):
         errors.append("sim_config.shock_prob must be numeric")
+    if "expedite_budget" in sim_config and sim_config["expedite_budget"] is not None and not _is_number(sim_config["expedite_budget"]):
+        errors.append("sim_config.expedite_budget must be numeric or null")
+    if "expedite_c0" in sim_config and not _is_number(sim_config["expedite_c0"]):
+        errors.append("sim_config.expedite_c0 must be numeric")
+    if "expedite_alpha" in sim_config and not _is_number(sim_config["expedite_alpha"]):
+        errors.append("sim_config.expedite_alpha must be numeric")
+    if "expedite_m_max" in sim_config and sim_config["expedite_m_max"] is not None and not _is_number(sim_config["expedite_m_max"]):
+        errors.append("sim_config.expedite_m_max must be numeric or null")
+    if "expedite_cost_default" in sim_config and not _is_number(sim_config["expedite_cost_default"]):
+        errors.append("sim_config.expedite_cost_default must be numeric")
+    if "expedite_cost_overrides" in sim_config and not isinstance(sim_config["expedite_cost_overrides"], dict):
+        errors.append("sim_config.expedite_cost_overrides must be a dict")
 
     baseline_id = manifest.get("baseline_scenario_id")
     if baseline_id is not None and not isinstance(baseline_id, str):

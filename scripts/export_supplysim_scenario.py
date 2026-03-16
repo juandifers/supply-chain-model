@@ -25,6 +25,25 @@ def _default_scenario_id(seed: int, T: int, gamma: float, shock_prob: float) -> 
     return f"seed{seed}_T{T}_gamma{_slugify_float(gamma)}_shock{_slugify_float(shock_prob)}"
 
 
+def _parse_product_cost_overrides(raw: str | None) -> Dict[str, float]:
+    if raw is None:
+        return {}
+    text = raw.strip()
+    if text == "":
+        return {}
+
+    payload = json.loads(text)
+    if not isinstance(payload, dict):
+        raise ValueError("--expedite-cost-overrides must be a JSON object: {\"product_name\": cost}")
+
+    out: Dict[str, float] = {}
+    for product, cost in payload.items():
+        if not isinstance(product, str):
+            raise ValueError("expedite-cost-overrides keys must be product name strings")
+        out[product] = float(cost)
+    return out
+
+
 def _build_static_tables(env: SupplySimEnv) -> Dict[str, pd.DataFrame]:
     exog_set = set(env.exog_prods)
     consumer_set = set(env.consumer_prods)
@@ -153,8 +172,25 @@ def _export_scenario(
     init_demand: float,
     description: str,
     baseline_scenario_id: str | None,
+    expedite_budget: float | None,
+    expedite_c0: float,
+    expedite_alpha: float,
+    expedite_m_max: float | None,
+    expedite_cost_default: float,
+    expedite_cost_overrides: Dict[str, float],
 ) -> None:
-    env = SupplySimEnv(seed=seed, T=T, gamma=gamma, log_kpis=False)
+    env = SupplySimEnv(
+        seed=seed,
+        T=T,
+        gamma=gamma,
+        log_kpis=False,
+        expedite_budget=expedite_budget,
+        expedite_c0=expedite_c0,
+        expedite_alpha=expedite_alpha,
+        expedite_m_max=expedite_m_max,
+        expedite_cost_default=expedite_cost_default,
+        expedite_cost_per_unit=expedite_cost_overrides,
+    )
     env.reset(
         init_inv=init_inv,
         init_supply=init_supply,
@@ -270,6 +306,12 @@ def _export_scenario(
             "init_inv": init_inv,
             "init_supply": init_supply,
             "init_demand": init_demand,
+            "expedite_budget": expedite_budget,
+            "expedite_c0": expedite_c0,
+            "expedite_alpha": expedite_alpha,
+            "expedite_m_max": expedite_m_max,
+            "expedite_cost_default": expedite_cost_default,
+            "expedite_cost_overrides": expedite_cost_overrides,
         },
         "description": description,
         "baseline_scenario_id": baseline_scenario_id,
@@ -294,12 +336,49 @@ def get_args() -> argparse.Namespace:
     parser.add_argument("--scenario-id", type=str, default=None)
     parser.add_argument("--description", type=str, default="SupplySim scenario export")
     parser.add_argument("--baseline-scenario-id", type=str, default=None)
+    parser.add_argument(
+        "--expedite-budget",
+        type=float,
+        default=None,
+        help="Episode expedite budget. Omit for unlimited.",
+    )
+    parser.add_argument(
+        "--expedite-c0",
+        type=float,
+        default=1.0,
+        help="Base per-unit expedite cost at depth 0.",
+    )
+    parser.add_argument(
+        "--expedite-alpha",
+        type=float,
+        default=0.5,
+        help="Tier premium factor in c_p = c0 * (1 + alpha * depth).",
+    )
+    parser.add_argument(
+        "--expedite-m-max",
+        type=float,
+        default=3.0,
+        help="Clamp for supply multipliers m in actions; set <=0 to disable expedite boost.",
+    )
+    parser.add_argument(
+        "--expedite-cost-default",
+        type=float,
+        default=1.0,
+        help="Fallback per-unit cost if product cost is missing.",
+    )
+    parser.add_argument(
+        "--expedite-cost-overrides",
+        type=str,
+        default=None,
+        help="JSON dict of per-product unit costs, e.g. '{\"product4\": 2.5, \"product7\": 1.2}'",
+    )
     parser.add_argument("--output-root", type=str, default=os.path.join(ROOT, "artifacts", "scenarios"))
     return parser.parse_args()
 
 
 def main() -> None:
     args = get_args()
+    expedite_cost_overrides = _parse_product_cost_overrides(args.expedite_cost_overrides)
     scenario_id = args.scenario_id or _default_scenario_id(args.seed, args.T, args.gamma, args.shock_prob)
     scenario_dir = Path(args.output_root) / scenario_id
 
@@ -314,6 +393,12 @@ def main() -> None:
         init_demand=args.init_demand,
         description=args.description,
         baseline_scenario_id=args.baseline_scenario_id,
+        expedite_budget=args.expedite_budget,
+        expedite_c0=args.expedite_c0,
+        expedite_alpha=args.expedite_alpha,
+        expedite_m_max=args.expedite_m_max,
+        expedite_cost_default=args.expedite_cost_default,
+        expedite_cost_overrides=expedite_cost_overrides,
     )
     print(f"Exported scenario: {scenario_id}")
     print(f"Path: {scenario_dir}")

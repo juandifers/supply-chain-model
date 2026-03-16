@@ -18,13 +18,40 @@ class SupplySimEnv:
     Action hook lets you intervene before a timestep (reroute, cap supply, etc.).
     """
 
-    def __init__(self, seed=0, T=100, gamma=0.8, num_decimals=5, log_kpis=False):
+    def __init__(
+        self,
+        seed=0,
+        T=100,
+        gamma=0.8,
+        num_decimals=5,
+        log_kpis=False,
+        expedite_budget=None,
+        expedite_c0=1.0,
+        expedite_alpha=0.5,
+        expedite_m_max=3.0,
+        expedite_cost_per_unit=None,
+        expedite_cost_default=1.0,
+        expedite_default_cost=None,
+    ):
         self.seed = seed
         self.T = T
         self.gamma = gamma
         self.num_decimals = num_decimals
         self.log_kpis = log_kpis
         self.rng = np.random.RandomState(seed)
+        self.expedite_budget = None if expedite_budget is None else float(expedite_budget)
+        self.expedite_budget_remaining = self.expedite_budget
+        self.expedite_c0 = float(expedite_c0)
+        self.expedite_alpha = float(expedite_alpha)
+        self.expedite_m_max = None if expedite_m_max is None else float(expedite_m_max)
+        self._expedite_cost_overrides = dict(expedite_cost_per_unit or {})
+        if expedite_default_cost is not None:
+            expedite_cost_default = expedite_default_cost
+        self.expedite_cost_default = float(expedite_cost_default)
+        self.expedite_cost_per_unit = {}
+        self.expedite_cost_t = 0.0
+        self.expedite_units_added_t = 0.0
+        self.expedite_cost_cum = 0.0
 
         # filled in reset()
         self.firms = None
@@ -101,11 +128,16 @@ class SupplySimEnv:
         self.consumer_prods = sorted(set(self.prod_graph.dest.values) - set(self.prod_graph.source.values))
         self.exog_prods = sorted(set(self.prod_graph.source.values) - set(self.prod_graph.dest.values))
         self.exog_baseline_supply = self._compute_exog_baselines()
+        self.expedite_cost_per_unit = self._compute_expedite_cost_per_unit()
 
         self.t = 0
         self.kpi_history = []
         self.last_kpis = {}
         self.reroutes_cum = 0
+        self.expedite_budget_remaining = self.expedite_budget
+        self.expedite_cost_t = 0.0
+        self.expedite_units_added_t = 0.0
+        self.expedite_cost_cum = 0.0
         _, init_consumer_backlog_units = self._consumer_order_stats()
         self.consumer_demand_cum = init_consumer_backlog_units
         self.consumer_fulfilled_cum = 0.0
@@ -154,6 +186,45 @@ class SupplySimEnv:
                 supply_ts.append(total_supply_p)
             baselines[p] = max(1.0, float(np.percentile(supply_ts, 90)))
         return baselines
+
+    def _compute_product_depths(self):
+        products = list(self.products)
+        predecessors = {p: [] for p in products}
+        for row in self.prod_graph.itertuples(index=False):
+            predecessors[row.dest].append(row.source)
+
+        state = {p: 0 for p in products}
+        depth = {}
+
+        def _dfs(product):
+            if state[product] == 2:
+                return depth[product]
+            if state[product] == 1:
+                raise ValueError("Product graph contains a cycle; expected DAG for depth computation")
+            state[product] = 1
+            preds = predecessors.get(product, [])
+            if len(preds) == 0:
+                value = 0
+            else:
+                value = 1 + max(_dfs(parent) for parent in preds)
+            depth[product] = int(value)
+            state[product] = 2
+            return depth[product]
+
+        for p in products:
+            if state[p] == 0:
+                _dfs(p)
+        return depth
+
+    def _compute_expedite_cost_per_unit(self):
+        depths = self._compute_product_depths()
+        costs = {}
+        for p in self.products:
+            tier_cost = self.expedite_c0 * (1.0 + self.expedite_alpha * float(depths.get(p, 0)))
+            costs[p] = float(np.round(max(0.0, tier_cost), self.num_decimals))
+        for p, override in self._expedite_cost_overrides.items():
+            costs[p] = float(np.round(max(0.0, float(override)), self.num_decimals))
+        return costs
 
     def _get_shock_stats(self, t):
         if self.exog_schedule is None or len(self.exog_baseline_supply) == 0:
@@ -213,6 +284,8 @@ class SupplySimEnv:
         # --- 0) apply action hook BEFORE the timestep evolves ---
         # Keep this flexible: you can pass a function or a dict.
         reroutes_applied = 0
+        self.expedite_cost_t = 0.0
+        self.expedite_units_added_t = 0.0
         if action is not None:
             prev_supplier_map = dict(self.inputs2supplier)
             if callable(action):
@@ -349,6 +422,14 @@ class SupplySimEnv:
             "consumer_cumulative_fill_rate": float(np.round(consumer_cumulative_fill_rate, 6)),
             "reroutes_applied": int(reroutes_applied),
             "reroutes_cumulative": int(self.reroutes_cum),
+            "expedite_cost_t": float(np.round(self.expedite_cost_t, self.num_decimals)),
+            "expedite_cost_cum": float(np.round(self.expedite_cost_cum, self.num_decimals)),
+            "expedite_units_added_t": float(np.round(self.expedite_units_added_t, self.num_decimals)),
+            "expedite_budget_remaining": (
+                None
+                if self.expedite_budget_remaining is None
+                else float(np.round(self.expedite_budget_remaining, self.num_decimals))
+            ),
             "shock_exposure": float(np.round(shock_stats["shock_exposure"], 6)),
             "active_exogenous_shocks": int(shock_stats["active_exogenous_shocks"]),
             "worst_shocked_product": shock_stats["worst_shocked_product"],
@@ -386,6 +467,86 @@ class SupplySimEnv:
         if "supply_multiplier" in action and self.exog_schedule is not None:
             mults = action["supply_multiplier"]
             exog_t = self.exog_schedule[self.t]
+            reduction_plans = []
+            expedite_plans = []
+
             for (firm, product), m in mults.items():
-                if (firm, product) in exog_t:
-                    exog_t[(firm, product)] = int(exog_t[(firm, product)] * m)
+                key = (firm, product)
+                if key not in exog_t:
+                    continue
+                base_supply = int(exog_t[key])
+                m = float(m)
+                if self.expedite_m_max is not None:
+                    m = min(m, self.expedite_m_max)
+                m = max(0.0, m)
+                requested_supply = max(0, int(base_supply * m))
+                requested_delta = int(requested_supply - base_supply)
+                unit_cost = float(self.expedite_cost_per_unit.get(product, self.expedite_cost_default))
+                unit_cost = max(0.0, unit_cost)
+                if requested_delta <= 0:
+                    reduction_plans.append(
+                        {
+                            "key": key,
+                            "requested_supply": requested_supply,
+                        }
+                    )
+                else:
+                    requested_cost = float(requested_delta * unit_cost)
+                    expedite_plans.append(
+                        {
+                            "key": key,
+                            "base_supply": base_supply,
+                            "requested_supply": requested_supply,
+                            "requested_delta": requested_delta,
+                            "unit_cost": unit_cost,
+                            "requested_cost": requested_cost,
+                        }
+                    )
+
+            for plan in reduction_plans:
+                exog_t[plan["key"]] = int(plan["requested_supply"])
+
+            positive_cost_plans = [p for p in expedite_plans if p["unit_cost"] > 0]
+            requested_total_cost = float(np.sum([p["requested_cost"] for p in positive_cost_plans]))
+            remaining_budget = None if self.expedite_budget_remaining is None else max(0.0, float(self.expedite_budget_remaining))
+            alpha_scale = 1.0
+            if remaining_budget is not None and requested_total_cost > remaining_budget and requested_total_cost > 0:
+                alpha_scale = remaining_budget / requested_total_cost
+
+            step_cost = 0.0
+            step_units = 0.0
+
+            for plan in expedite_plans:
+                base_supply = plan["base_supply"]
+                requested_supply = plan["requested_supply"]
+                requested_delta = plan["requested_delta"]
+                unit_cost = plan["unit_cost"]
+                requested_cost = plan["requested_cost"]
+
+                if unit_cost == 0:
+                    # Free expedite entries bypass the budget cap by design.
+                    applied_supply = requested_supply
+                    applied_cost = 0.0
+                    applied_delta = requested_delta
+                elif alpha_scale < 1.0:
+                    budget_i = alpha_scale * requested_cost
+                    applied_delta = int(np.floor(budget_i / unit_cost))
+                    applied_delta = int(max(0, min(requested_delta, applied_delta)))
+                    applied_supply = base_supply + applied_delta
+                    applied_cost = float(applied_delta * unit_cost)
+                else:
+                    applied_supply = requested_supply
+                    applied_cost = requested_cost
+                    applied_delta = requested_delta
+
+                exog_t[plan["key"]] = int(max(0, applied_supply))
+                if applied_delta > 0:
+                    step_units += float(applied_delta)
+                    step_cost += float(applied_cost)
+
+            self.expedite_units_added_t += float(np.round(step_units, self.num_decimals))
+            self.expedite_cost_t += float(np.round(step_cost, self.num_decimals))
+            self.expedite_cost_cum += float(np.round(step_cost, self.num_decimals))
+
+            if self.expedite_budget_remaining is not None:
+                self.expedite_budget_remaining = max(0.0, float(self.expedite_budget_remaining - step_cost))
