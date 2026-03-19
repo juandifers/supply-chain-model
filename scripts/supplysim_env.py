@@ -84,7 +84,8 @@ class SupplySimEnv:
 
     def reset(self, init_inv=0, init_supply=100, init_demand=1,
               use_demand_schedule=True, use_exog_schedule=True,
-              shock_prob=0.001):
+              shock_prob=0.001, default_supply=None, shock_supply=None,
+              recovery_rate=None):
         # static graphs
         (self.firms, self.products, self.prod_graph,
          self.firm2prods, self.prod2firms, self.inputs2supplier) = sd.generate_static_graphs(seed=self.seed)
@@ -117,13 +118,20 @@ class SupplySimEnv:
 
         self.exog_schedule = None
         if use_exog_schedule:
-            self.exog_schedule = sd.generate_exog_schedule_with_shocks(
+            shock_kwargs = dict(
                 num_timesteps=self.T,
                 prod_graph=self.prod_graph,
                 prod2firms=self.prod2firms,
                 seed=self.seed,
                 shock_prob=shock_prob,
             )
+            if default_supply is not None:
+                shock_kwargs["default_supply"] = default_supply
+            if shock_supply is not None:
+                shock_kwargs["shock_supply"] = shock_supply
+            if recovery_rate is not None:
+                shock_kwargs["recovery_rate"] = recovery_rate
+            self.exog_schedule = sd.generate_exog_schedule_with_shocks(**shock_kwargs)
 
         self.consumer_prods = sorted(set(self.prod_graph.dest.values) - set(self.prod_graph.source.values))
         self.exog_prods = sorted(set(self.prod_graph.source.values) - set(self.prod_graph.dest.values))

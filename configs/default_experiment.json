@@ -1,0 +1,11 @@
+{
+    "seeds": 30,
+    "T": 50,
+    "gamma": 0.8,
+    "shock_prob": 0.01,
+    "expedite_budget": 200.0,
+    "expedite_c0": 1.0,
+    "expedite_alpha": 0.5,
+    "expedite_m_max": 3.0,
+    "reroute_budget_K": 3
+}
