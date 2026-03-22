@@ -131,8 +131,8 @@ Exogenous supply is a **per-timestep throughput cap**, not a stockpile. Each tim
 default_supply = 500,000    # Per (firm, product), ~6x avg consumption
 recovery_rate  = 1.05       # Slow recovery amplifies shock persistence (was 1.25)
 warmup_steps   = 10         # Shock-free warmup
-shock_fraction = 0.3        # 70% supply reduction during shock (primary severity axis)
-T              = 60
+shock_magnitude = 0.7       # 70% supply reduction during shock (primary severity axis)
+T              = 90
 K              = 3          # Reroute budget per step
 expedite_budget = 50,000
 ```

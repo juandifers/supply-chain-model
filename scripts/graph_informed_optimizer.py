@@ -50,6 +50,9 @@ class SignalComputer:
         # product depths (longest-path distance from any exog source)
         self._depths: Dict[str, int] = {}
         for p in env.products:
+            if p not in self._graph:
+                self._depths[p] = 0  # isolated product (no edges in DAG)
+                continue
             preds = list(self._graph.predecessors(p))
             if len(preds) == 0:
                 self._depths[p] = 0
@@ -77,6 +80,9 @@ class SignalComputer:
         # downstream consumer coverage per product
         self._downstream_consumers: Dict[str, set] = {}
         for p in env.products:
+            if p not in self._graph:
+                self._downstream_consumers[p] = set()
+                continue
             reachable = nx.descendants(self._graph, p)
             self._downstream_consumers[p] = reachable.intersection(self._consumer_set)
 
@@ -150,7 +156,7 @@ class SignalComputer:
         total_open_orders = 0.0
         for (supplier, prod), orders in env.curr_orders.items():
             if prod == product:
-                total_open_orders += sum(float(amt) for _, amt in orders)
+                total_open_orders += sum(float(amt) for _, amt, *_ in orders)
 
         demand_proxy = total_open_orders + total_pending
         supply_proxy = total_inv + 1e-6
@@ -161,13 +167,13 @@ class SignalComputer:
         downstream_prods = self._downstream_consumers.get(product, set()) | {product}
         for (supplier, prod), orders in env.curr_orders.items():
             if prod in downstream_prods:
-                for buyer, amt in orders:
+                for buyer, amt, *_ in orders:
                     if buyer == "consumer":
                         downstream_consumer_backlog += float(amt)
         # normalise by total consumer backlog
         total_consumer_backlog = 0.0
         for orders in env.curr_orders.values():
-            for buyer, amt in orders:
+            for buyer, amt, *_ in orders:
                 if buyer == "consumer":
                     total_consumer_backlog += float(amt)
         backlog_inc = float(np.clip(
@@ -221,7 +227,7 @@ class SignalComputer:
         open_units = 0.0
         for (supplier, prod), orders in env.curr_orders.items():
             if supplier == firm:
-                open_units += sum(float(amt) for _, amt in orders)
+                open_units += sum(float(amt) for _, amt, *_ in orders)
         # fulfilled proxy: inventory of products this firm supplies
         fulfilled_proxy = 0.0
         f_idx = env.firm2idx.get(firm)

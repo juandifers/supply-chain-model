@@ -41,20 +41,33 @@ from tqdm import tqdm
 
 # --- Default regime grid (calibrated 2026-03-19) ---
 FIRM_SHOCK_FRACTIONS = [0.3, 0.5, 0.7, 1.0]
-SHOCK_FRACTIONS = [0.2, 0.4, 0.6, 0.8]  # Primary severity axis (creates real variation)
+SHOCK_MAGNITUDES = [0.2, 0.4, 0.6, 0.8]  # Primary severity axis (0.2 = mild 20% drop, 0.8 = severe 80% drop)
 SHOCK_PROBS = [0.05, 0.1, 0.15, 0.2]
 
 # Fixed params (can be overridden by calibration file)
 DEFAULTS = {
-    "default_supply": 500_000,   # Calibrated: transition zone for this network topology
-    "shock_fraction": 0.3,
+    "default_supply": 100,       # Calibrated: right-sized to demand with reduced BOM
+    "shock_magnitude": 0.7,
     "recovery_rate": 1.05,       # Calibrated: slower recovery amplifies shock persistence
     "warmup_steps": 10,
     "init_inv": 0,
-    "T": 60,
+    "init_demand": 10,           # Calibrated: with min_units=1, max_units=1 BOM
+    "T": 90,
     "expedite_budget": 50_000,
     "expedite_m_max": 3.0,
     "K": 3,
+    # Graph structure
+    "num_inner_layers": 2,
+    "num_per_layer": 10,
+    "min_num_suppliers": 2,
+    "max_num_suppliers": 3,
+    "min_inputs": 1,
+    "max_inputs": 2,
+    "min_units": 1,
+    "max_units": 1,
+    # Order expiry + KPI warm-start
+    "max_order_age": 10,
+    "kpi_start_step": 4,
 }
 
 
@@ -113,14 +126,25 @@ def run_single_experiment(exp):
         seed=seed,
         T=config.get("T", DEFAULTS["T"]),
         default_supply=config.get("default_supply", DEFAULTS["default_supply"]),
-        shock_fraction=config.get("shock_fraction", DEFAULTS["shock_fraction"]),
+        shock_magnitude=config.get("shock_magnitude", DEFAULTS["shock_magnitude"]),
         shock_prob=config["shock_prob"],
         recovery_rate=config.get("recovery_rate", DEFAULTS["recovery_rate"]),
         firm_shock_fraction=config["firm_shock_fraction"],
         warmup_steps=config.get("warmup_steps", DEFAULTS["warmup_steps"]),
         init_inv=config.get("init_inv", DEFAULTS["init_inv"]),
+        init_demand=config.get("init_demand", DEFAULTS["init_demand"]),
         expedite_budget=config.get("expedite_budget", DEFAULTS["expedite_budget"]),
         expedite_m_max=config.get("expedite_m_max", DEFAULTS["expedite_m_max"]),
+        num_inner_layers=config.get("num_inner_layers", DEFAULTS["num_inner_layers"]),
+        num_per_layer=config.get("num_per_layer", DEFAULTS["num_per_layer"]),
+        min_num_suppliers=config.get("min_num_suppliers", DEFAULTS["min_num_suppliers"]),
+        max_num_suppliers=config.get("max_num_suppliers", DEFAULTS["max_num_suppliers"]),
+        min_inputs=config.get("min_inputs", DEFAULTS["min_inputs"]),
+        max_inputs=config.get("max_inputs", DEFAULTS["max_inputs"]),
+        min_units=config.get("min_units", DEFAULTS["min_units"]),
+        max_units=config.get("max_units", DEFAULTS["max_units"]),
+        max_order_age=config.get("max_order_age", DEFAULTS["max_order_age"]),
+        kpi_start_step=config.get("kpi_start_step", DEFAULTS["kpi_start_step"]),
     )
 
     done = False
@@ -184,7 +208,7 @@ def build_experiment_list(args, calibration=None):
                 cal_key = f"{fsf}_{sp}"
                 if cal_key in calibration.get("calibration_table", {}):
                     cal_entry = calibration["calibration_table"][cal_key]
-                    for k in ["default_supply", "shock_fraction", "K", "expedite_budget",
+                    for k in ["default_supply", "shock_magnitude", "K", "expedite_budget",
                               "warmup_steps", "init_inv", "T"]:
                         if k in cal_entry:
                             config[k] = cal_entry[k]

@@ -1,89 +1,131 @@
-# scripts/supplysim_env.py
+"""
+SupplySimEnv V2 — drop-in replacement using the new shock architecture.
+
+Preserves the same external API:
+- reset() -> obs dict
+- step(action) -> (obs, reward, done, info)
+- get_kpi_history() -> DataFrame
+- Same action format: {"reroute": [...], "supply_multiplier": {...}}
+
+Internally injects ShockEngine and PolicyInterfaceLayer into the env step loop.
+
+Usage:
+    from scripts.supplysim_env_v2 import SupplySimEnvV2
+    from scripts.shock_architecture import ArchitectureConfig
+
+    config = ArchitectureConfig()  # defaults reproduce v1 behavior
+    env = SupplySimEnvV2(seed=0, T=80, arch_config=config)
+    obs = env.reset()
+"""
+
+from __future__ import annotations
+
+import copy
 import numpy as np
 import pandas as pd
 from scipy.sparse import csr_matrix
 import os
 import sys
+from typing import Any, Dict, List, Optional, Tuple
 
 ROOT = os.path.dirname(os.path.dirname(__file__))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from TGB.modules import synthetic_data as sd
+from scripts.shock_architecture import (
+    ArchitectureConfig,
+    TopologyConfig,
+    ShockGenerationConfig,
+    ShockDynamicsConfig,
+    PolicyInterfaceConfig,
+    ShockEngine,
+    PolicyInterfaceLayer,
+    SupplyGraph,
+)
 
-class SupplySimEnv:
+
+class SupplySimEnvV2:
     """
-    Step-by-step wrapper around synthetic_data.py.
-    Observation is intentionally simple at first.
-    Action hook lets you intervene before a timestep (reroute, cap supply, etc.).
+    V2 environment wrapper with configurable shock architecture.
+
+    Backward compatible: ArchitectureConfig() with defaults produces
+    behavior matching the original SupplySimEnv when shock_architecture_enabled=False.
     """
 
     def __init__(
         self,
-        seed=0,
-        T=100,
-        gamma=0.8,
-        num_decimals=5,
-        log_kpis=False,
-        expedite_budget=None,
-        expedite_c0=1.0,
-        expedite_alpha=0.5,
-        expedite_m_max=3.0,
-        expedite_cost_per_unit=None,
-        expedite_cost_default=1.0,
-        expedite_default_cost=None,
-        # Graph structure params
-        num_inner_layers=2,
-        num_per_layer=10,
-        min_num_suppliers=2,
-        max_num_suppliers=3,
-        # BOM params
-        min_inputs=1,
-        max_inputs=2,
-        min_units=1,
-        max_units=2,
-        # Order expiry
-        max_order_age=10,
+        seed: int = 0,
+        T: int = 100,
+        gamma: float = 0.8,
+        num_decimals: int = 5,
+        log_kpis: bool = False,
+        arch_config: Optional[ArchitectureConfig] = None,
+        # Legacy compat params (overridden by arch_config if provided)
+        expedite_budget: Optional[float] = None,
+        expedite_c0: float = 1.0,
+        expedite_alpha: float = 0.5,
+        expedite_m_max: float = 3.0,
+        expedite_cost_per_unit: Optional[dict] = None,
+        expedite_cost_default: float = 1.0,
         # KPI warm-start
-        kpi_start_step=None,
+        kpi_start_step: Optional[int] = None,
+        # Whether to use the new shock architecture
+        shock_architecture_enabled: bool = True,
     ):
         self.seed = seed
         self.T = T
         self.gamma = gamma
         self.num_decimals = num_decimals
         self.log_kpis = log_kpis
+
+        # Architecture config
+        if arch_config is None:
+            arch_config = ArchitectureConfig()
+        self.arch_config = arch_config
+        self.shock_architecture_enabled = shock_architecture_enabled
+
+        # RNG
         self.rng = np.random.RandomState(seed)
-        self.expedite_budget = None if expedite_budget is None else float(expedite_budget)
+        self._rng_gen = np.random.default_rng(seed)
+
+        # Topology config
+        topo = arch_config.topology
+        self.num_inner_layers = topo.num_inner_layers
+        self.num_per_layer = topo.num_per_layer
+        self.min_num_suppliers = topo.min_num_suppliers
+        self.max_num_suppliers = topo.max_num_suppliers
+
+        # BOM params (fixed)
+        self.min_inputs = 1
+        self.max_inputs = 2
+        self.min_units = 1
+        self.max_units = 2
+
+        # Policy interface
+        pi = arch_config.policy_interface
+        self.max_order_age = pi.max_order_age
+
+        # Expedite params — from arch_config or legacy
+        if expedite_budget is not None:
+            self.expedite_budget = float(expedite_budget)
+        else:
+            self.expedite_budget = float(pi.expedite_budget)
         self.expedite_budget_remaining = self.expedite_budget
         self.expedite_c0 = float(expedite_c0)
         self.expedite_alpha = float(expedite_alpha)
-        self.expedite_m_max = None if expedite_m_max is None else float(expedite_m_max)
+        self.expedite_m_max = float(expedite_m_max)
         self._expedite_cost_overrides = dict(expedite_cost_per_unit or {})
-        if expedite_default_cost is not None:
-            expedite_cost_default = expedite_default_cost
         self.expedite_cost_default = float(expedite_cost_default)
         self.expedite_cost_per_unit = {}
         self.expedite_cost_t = 0.0
         self.expedite_units_added_t = 0.0
         self.expedite_cost_cum = 0.0
 
-        # Graph structure
-        self.num_inner_layers = int(num_inner_layers)
-        self.num_per_layer = int(num_per_layer)
-        self.min_num_suppliers = int(min_num_suppliers)
-        self.max_num_suppliers = int(max_num_suppliers)
-        self.min_inputs = int(min_inputs)
-        self.max_inputs = int(max_inputs)
-        self.min_units = int(min_units)
-        self.max_units = int(max_units)
-
-        # Order expiry
-        self.max_order_age = int(max_order_age)
-
-        # KPI warm-start (default: num_inner_layers + 2)
+        # KPI warm-start
         self.kpi_start_step = int(kpi_start_step) if kpi_start_step is not None else (self.num_inner_layers + 2)
 
-        # filled in reset()
+        # Placeholders
         self.firms = None
         self.products = None
         self.prod_graph = None
@@ -93,12 +135,10 @@ class SupplySimEnv:
         self.firm2idx = None
         self.prod2idx = None
         self.prod_mat = None
-
         self.inventories = None
         self.curr_orders = None
         self.exog_supp = None
         self.pending = None
-
         self.demand_schedule = None
         self.exog_schedule = None
         self.consumer_prods = None
@@ -112,11 +152,27 @@ class SupplySimEnv:
         self.consumer_fulfilled_cum = 0.0
         self.reroutes_cum = 0
 
-    def reset(self, init_inv=0, init_supply=100, init_demand=1,
-              use_demand_schedule=True, use_exog_schedule=True,
-              shock_prob=0.001, default_supply=None, shock_supply=None,
-              recovery_rate=None):
-        # static graphs
+        # Shock architecture components (initialized in reset)
+        self.supply_graph: Optional[SupplyGraph] = None
+        self.shock_engine: Optional[ShockEngine] = None
+        self.policy_layer: Optional[PolicyInterfaceLayer] = None
+        self._obs_history: List[dict] = []
+        self._shock_events_log: List[dict] = []
+
+    def reset(
+        self,
+        init_inv: float = 0,
+        init_supply: float = 100,
+        init_demand: float = 1,
+        use_demand_schedule: bool = True,
+        use_exog_schedule: bool = True,
+        shock_prob: float = 0.001,
+        default_supply: Optional[float] = None,
+        shock_supply: Optional[float] = None,
+        recovery_rate: Optional[float] = None,
+        warmup_steps: int = 10,
+    ) -> dict:
+        # Static graphs
         (self.firms, self.products, self.prod_graph,
          self.firm2prods, self.prod2firms, self.inputs2supplier) = sd.generate_static_graphs(
             seed=self.seed,
@@ -134,7 +190,7 @@ class SupplySimEnv:
         self.prod2idx = {p: i for i, p in enumerate(self.products)}
         self.prod_mat = sd.get_prod_mat(self.prod_graph, self.prod2idx)
 
-        # initial conditions
+        # Initial conditions
         self.inventories, self.curr_orders, self.exog_supp = sd.generate_initial_conditions(
             firms=self.firms,
             products=self.products,
@@ -146,7 +202,7 @@ class SupplySimEnv:
         )
         self.pending = np.zeros_like(self.inventories)
 
-        # schedules
+        # Demand schedule
         self.demand_schedule = None
         if use_demand_schedule:
             self.demand_schedule = sd.generate_demand_schedule(
@@ -156,28 +212,72 @@ class SupplySimEnv:
                 seed=self.seed,
             )
 
+        # Exog schedule — generate the baseline (unshocked) schedule
         self.exog_schedule = None
         if use_exog_schedule:
-            shock_kwargs = dict(
-                num_timesteps=self.T,
-                prod_graph=self.prod_graph,
-                prod2firms=self.prod2firms,
-                seed=self.seed,
-                shock_prob=shock_prob,
-            )
-            if default_supply is not None:
-                shock_kwargs["default_supply"] = default_supply
-            if shock_supply is not None:
-                shock_kwargs["shock_supply"] = shock_supply
-            if recovery_rate is not None:
-                shock_kwargs["recovery_rate"] = recovery_rate
-            self.exog_schedule = sd.generate_exog_schedule_with_shocks(**shock_kwargs)
+            # If using new architecture, generate flat schedule (shocks applied by engine)
+            if self.shock_architecture_enabled:
+                ds = default_supply if default_supply is not None else 500_000
+                self.exog_schedule = self._generate_flat_exog_schedule(ds)
+            else:
+                # Legacy: use sd's shock schedule
+                shock_kwargs = dict(
+                    num_timesteps=self.T,
+                    prod_graph=self.prod_graph,
+                    prod2firms=self.prod2firms,
+                    seed=self.seed,
+                    shock_prob=shock_prob,
+                )
+                if default_supply is not None:
+                    shock_kwargs["default_supply"] = default_supply
+                if shock_supply is not None:
+                    shock_kwargs["shock_supply"] = shock_supply
+                if recovery_rate is not None:
+                    shock_kwargs["recovery_rate"] = recovery_rate
+                self.exog_schedule = sd.generate_exog_schedule_with_shocks(**shock_kwargs)
 
-        self.consumer_prods = sorted(set(self.prod_graph.dest.values) - set(self.prod_graph.source.values))
-        self.exog_prods = sorted(set(self.prod_graph.source.values) - set(self.prod_graph.dest.values))
+        self.consumer_prods = sorted(
+            set(self.prod_graph.dest.values) - set(self.prod_graph.source.values)
+        )
+        self.exog_prods = sorted(
+            set(self.prod_graph.source.values) - set(self.prod_graph.dest.values)
+        )
         self.exog_baseline_supply = self._compute_exog_baselines()
         self.expedite_cost_per_unit = self._compute_expedite_cost_per_unit()
 
+        # --- Initialize shock architecture ---
+        if self.shock_architecture_enabled:
+            # Build SupplyGraph
+            arch_rng = np.random.default_rng(self.seed + 1000)
+            self.supply_graph = SupplyGraph(
+                firms=self.firms,
+                products=self.products,
+                prod_graph=self.prod_graph,
+                firm2prods=self.firm2prods,
+                prod2firms=self.prod2firms,
+                inputs2supplier=self.inputs2supplier,
+                topology_config=self.arch_config.topology,
+                rng=arch_rng,
+            )
+
+            # ShockEngine with its own RNG for reproducibility
+            shock_rng = np.random.default_rng(self.seed + 2000)
+            self.shock_engine = ShockEngine(
+                gen_config=self.arch_config.shock_generation,
+                dyn_config=self.arch_config.shock_dynamics,
+                topology=self.supply_graph,
+                rng=shock_rng,
+            )
+            self.shock_engine.set_warmup_steps(warmup_steps)
+
+            # PolicyInterfaceLayer
+            self.policy_layer = PolicyInterfaceLayer(
+                config=self.arch_config.policy_interface,
+                topology=self.supply_graph,
+            )
+            self.policy_layer.reset()
+
+        # Reset counters
         self.t = 0
         self.kpi_history = []
         self.last_kpis = {}
@@ -186,13 +286,33 @@ class SupplySimEnv:
         self.expedite_cost_t = 0.0
         self.expedite_units_added_t = 0.0
         self.expedite_cost_cum = 0.0
+        self._obs_history = []
+        self._shock_events_log = []
+
         _, init_consumer_backlog_units = self._consumer_order_stats()
         self.consumer_demand_cum = init_consumer_backlog_units
         self.consumer_fulfilled_cum = 0.0
+
         return self._obs()
 
-    def _obs(self):
-        # Start simple: you can enrich later (KPIs, graph embeddings, etc.)
+    def _generate_flat_exog_schedule(self, default_supply: float) -> dict:
+        """Generate a flat (unshocked) exog schedule. Shocks are applied by ShockEngine."""
+        exog_prods = sorted(
+            set(self.prod_graph.source.values) - set(self.prod_graph.dest.values)
+        )
+        rng_schedule = np.random.RandomState(self.seed + 3000)
+        exog_schedule = {}
+        for t_step in range(self.T):
+            exog_t = {}
+            for p in exog_prods:
+                for f in self.prod2firms[p]:
+                    # Poisson noise around default_supply (same as sd)
+                    fp_supp = rng_schedule.poisson(default_supply)
+                    exog_t[(f, p)] = fp_supp
+            exog_schedule[t_step] = exog_t
+        return exog_schedule
+
+    def _obs(self) -> dict:
         return {
             "t": self.t,
             "inventories": self.inventories,
@@ -226,9 +346,9 @@ class SupplySimEnv:
         baselines = {}
         for p in self.exog_prods:
             supply_ts = []
-            for t in range(self.T):
+            for t_step in range(self.T):
                 total_supply_p = 0.0
-                for (firm, prod), amount in self.exog_schedule[t].items():
+                for (firm, prod), amount in self.exog_schedule[t_step].items():
                     if prod == p:
                         total_supply_p += float(amount)
                 supply_ts.append(total_supply_p)
@@ -240,7 +360,6 @@ class SupplySimEnv:
         predecessors = {p: [] for p in products}
         for row in self.prod_graph.itertuples(index=False):
             predecessors[row.dest].append(row.source)
-
         state = {p: 0 for p in products}
         depth = {}
 
@@ -248,7 +367,7 @@ class SupplySimEnv:
             if state[product] == 2:
                 return depth[product]
             if state[product] == 1:
-                raise ValueError("Product graph contains a cycle; expected DAG for depth computation")
+                raise ValueError("Cycle in product graph")
             state[product] = 1
             preds = predecessors.get(product, [])
             if len(preds) == 0:
@@ -282,7 +401,6 @@ class SupplySimEnv:
                 "worst_shocked_product": None,
                 "worst_shock_severity": 0.0,
             }
-
         severity = {}
         for p in self.exog_prods:
             curr_supply_p = 0.0
@@ -292,7 +410,6 @@ class SupplySimEnv:
             baseline = self.exog_baseline_supply[p]
             severity_p = max(0.0, min(1.0, 1.0 - curr_supply_p / baseline))
             severity[p] = severity_p
-
         worst_product = max(severity, key=severity.get)
         worst_severity = severity[worst_product]
         active_shocks = int(np.sum([1 if v >= 0.5 else 0 for v in severity.values()]))
@@ -314,20 +431,37 @@ class SupplySimEnv:
             f"worst={worst_prod}:{kpis['worst_shock_severity']:.2f}"
         )
 
-    def get_kpi_history(self):
+    def get_kpi_history(self) -> pd.DataFrame:
         if len(self.kpi_history) == 0:
             return pd.DataFrame()
         return pd.DataFrame(self.kpi_history).copy()
 
     def step(self, action=None, debug=False, log_kpis=None):
-        """
-        action: optional callable(env) or dict specifying interventions.
-        returns: obs, reward, done, info
-        """
         if self.t >= self.T:
             return self._obs(), 0.0, True, {"transactions": pd.DataFrame()}
 
         should_log_kpis = self.log_kpis if log_kpis is None else bool(log_kpis)
+
+        # --- 0) Apply shock architecture: modify exog_schedule for this step ---
+        shock_events = []
+        if self.shock_architecture_enabled and self.shock_engine is not None:
+            supply_multipliers, shock_events = self.shock_engine.step(self.t)
+            self._shock_events_log.extend(shock_events)
+
+            # Apply multipliers to the exog schedule for this timestep
+            if self.exog_schedule is not None:
+                exog_t = self.exog_schedule[self.t]
+                for (firm, product), mult in supply_multipliers.items():
+                    if (firm, product) in exog_t:
+                        exog_t[(firm, product)] = int(exog_t[(firm, product)] * mult)
+
+            # Apply demand surge
+            if self.demand_schedule is not None:
+                surge_mult = self.shock_engine.get_demand_surge_multiplier(self.t)
+                if surge_mult > 1.0:
+                    demand_t = self.demand_schedule[self.t]
+                    for key in demand_t:
+                        demand_t[key] = demand_t[key] * surge_mult
 
         # --- 0a) expire old orders ---
         lost_sales_units = 0.0
@@ -340,7 +474,6 @@ class SupplySimEnv:
                     surviving.append(order)
                 else:
                     lost_sales_units += float(amt)
-                    # Decrement pending for the buyer
                     if buyer != "consumer":
                         b_idx = self.firm2idx.get(buyer)
                         p = key[1]
@@ -349,8 +482,7 @@ class SupplySimEnv:
                             self.pending[b_idx, p_idx] = max(0.0, self.pending[b_idx, p_idx] - float(amt))
             self.curr_orders[key] = surviving
 
-        # --- 0b) apply action hook BEFORE the timestep evolves ---
-        # Keep this flexible: you can pass a function or a dict.
+        # --- 0b) apply action hook ---
         reroutes_applied = 0
         self.expedite_cost_t = 0.0
         self.expedite_units_added_t = 0.0
@@ -361,13 +493,15 @@ class SupplySimEnv:
             elif isinstance(action, dict):
                 self._apply_action_dict(action)
             changed_keys = set(prev_supplier_map.keys()).union(set(self.inputs2supplier.keys()))
-            reroutes_applied = np.sum([1 if prev_supplier_map.get(k) != self.inputs2supplier.get(k) else 0
-                                       for k in changed_keys])
+            reroutes_applied = np.sum([
+                1 if prev_supplier_map.get(k) != self.inputs2supplier.get(k) else 0
+                for k in changed_keys
+            ])
             self.reroutes_cum += int(reroutes_applied)
 
         consumer_backlog_orders_start, consumer_backlog_units_start = self._consumer_order_stats()
 
-        # --- 1) add new demand from consumers ---
+        # --- 1) add new demand ---
         demand_added_units = 0.0
         demand_added_orders = 0
         if self.demand_schedule is not None:
@@ -383,42 +517,32 @@ class SupplySimEnv:
 
         consumer_backlog_orders_after_demand, consumer_backlog_units_after_demand = self._consumer_order_stats()
 
-        # --- 2) simulate firms in random order ---
+        # --- 2) simulate firms ---
         transactions_t = []
         all_inputs_needed = np.zeros_like(self.inventories)
-
         firm_order = np.array(self.firms)[self.rng.choice(len(self.firms), replace=False, size=len(self.firms))]
 
         for f in firm_order:
             exog_supp_t = self.exog_supp if self.exog_schedule is None else self.exog_schedule[self.t]
             self.inventories, self.curr_orders, txns_completed, inputs_needed = sd.simulate_actions_for_firm(
-                f,
-                self.inventories,
-                self.curr_orders,
-                exog_supp_t,
-                self.firms,
-                self.products,
-                self.firm2idx,
-                self.prod2idx,
-                self.prod_mat,
-                self.firm2prods,
-                self.prod2firms,
-                self.inputs2supplier,
+                f, self.inventories, self.curr_orders, exog_supp_t,
+                self.firms, self.products, self.firm2idx, self.prod2idx, self.prod_mat,
+                self.firm2prods, self.prod2firms, self.inputs2supplier,
                 debug=debug,
             )
             transactions_t += txns_completed
             all_inputs_needed[self.firm2idx[f]] = inputs_needed
 
-        # --- 3) update inventories and pending based on completed transactions ---
+        # --- 3) update inventories ---
         txns_df = pd.DataFrame(columns=["supplier_id", "buyer_id", "product_id", "amount", "time"])
         if len(transactions_t) > 0:
             s_idxs, b_idxs, p_idxs, amts = list(zip(*transactions_t))
-            buyer_product_mat = csr_matrix((amts, (b_idxs, p_idxs)),
-                                           shape=(len(self.firms), len(self.products))).toarray()
-
+            buyer_product_mat = csr_matrix(
+                (amts, (b_idxs, p_idxs)),
+                shape=(len(self.firms), len(self.products))
+            ).toarray()
             self.inventories = np.round(self.inventories + buyer_product_mat, self.num_decimals)
             self.pending = np.round(self.pending - buyer_product_mat, self.num_decimals)
-
             txns_df = pd.DataFrame(transactions_t, columns=["supplier_id", "buyer_id", "product_id", "amount"])
             txns_df["time"] = self.t
             txns_df = txns_df.sample(replace=False, frac=1.0, random_state=self.seed)
@@ -426,17 +550,15 @@ class SupplySimEnv:
         else:
             txns_units = 0.0
 
-        # --- 4) place new orders based on unmet inputs (needs - inv - pending) ---
+        # --- 4) place new orders ---
         all_inputs_needed = np.clip(all_inputs_needed - self.inventories - self.pending, 0, None)
         all_inputs_needed = np.round(all_inputs_needed, self.num_decimals)
-
         for f in firm_order:
             f_idx = self.firm2idx[f]
             inputs_needed = all_inputs_needed[f_idx]
             for p_idx in inputs_needed.nonzero()[0]:
                 p = self.products[p_idx]
                 suppliers = self.prod2firms[p]
-
                 if self.gamma < 1:
                     uni_prob = (1 - self.gamma) / len(suppliers)
                     probs = [self.gamma + uni_prob if s == self.inputs2supplier[(f, p)] else uni_prob
@@ -444,12 +566,10 @@ class SupplySimEnv:
                     s = self.rng.choice(suppliers, p=np.array(probs) / np.sum(probs))
                 else:
                     s = self.inputs2supplier[(f, p)]
-
                 self.curr_orders[(s, p)].append((f, inputs_needed[p_idx], self.t))
                 self.pending[f_idx, p_idx] += inputs_needed[p_idx]
 
         num_orders, open_order_units = self._all_order_stats()
-
         consumer_backlog_orders_end, consumer_backlog_units_end = self._consumer_order_stats()
         consumer_fulfilled_units = np.round(
             max(0.0, consumer_backlog_units_after_demand - consumer_backlog_units_end),
@@ -486,7 +606,8 @@ class SupplySimEnv:
             "consumer_fulfilled_units": float(consumer_fulfilled_units),
             "consumer_backlog_orders": int(consumer_backlog_orders_end),
             "consumer_backlog_units": float(consumer_backlog_units_end),
-            "consumer_backlog_delta_units": float(np.round(consumer_backlog_units_end - consumer_backlog_units_start, self.num_decimals)),
+            "consumer_backlog_delta_units": float(np.round(
+                consumer_backlog_units_end - consumer_backlog_units_start, self.num_decimals)),
             "consumer_new_demand_fill_rate": float(np.round(consumer_new_demand_fill_rate, 6)),
             "consumer_queue_clearance_rate": float(np.round(consumer_queue_clearance_rate, 6)),
             "consumer_cumulative_fill_rate": float(np.round(consumer_cumulative_fill_rate, 6)),
@@ -496,8 +617,7 @@ class SupplySimEnv:
             "expedite_cost_cum": float(np.round(self.expedite_cost_cum, self.num_decimals)),
             "expedite_units_added_t": float(np.round(self.expedite_units_added_t, self.num_decimals)),
             "expedite_budget_remaining": (
-                None
-                if self.expedite_budget_remaining is None
+                None if self.expedite_budget_remaining is None
                 else float(np.round(self.expedite_budget_remaining, self.num_decimals))
             ),
             "shock_exposure": float(np.round(shock_stats["shock_exposure"], 6)),
@@ -511,10 +631,7 @@ class SupplySimEnv:
         if should_log_kpis:
             self._print_kpi_dashboard_line(kpis)
 
-        # --- reward: placeholder (you’ll define KPIs) ---
-        # e.g. penalize open orders or stockouts
         reward = -float(num_orders)
-
         self.t += 1
         done = (self.t >= self.T) or (num_orders == 0)
 
@@ -523,20 +640,28 @@ class SupplySimEnv:
             "num_orders": num_orders,
             "kpis": kpis,
         }
+
+        # Add shock state to info
+        if self.shock_architecture_enabled and self.shock_engine is not None:
+            info["shock_state"] = self.shock_engine.get_active_shock_states()
+            info["shock_events"] = shock_events
+
+        self._obs_history.append(self._obs())
         return self._obs(), reward, done, info
 
     def _apply_action_dict(self, action):
-        """
-        Example supported actions (easy to extend):
-        - {"reroute": [("buyerFirmName","productX","newSupplierFirmName"), ...]}
-        - {"supply_multiplier": {(firm, product): 0.5, ...}} applied to exog_schedule at current t
-        """
+        """Same as v1 but with optional PolicyInterfaceLayer constraints."""
         if "reroute" in action:
-            for buyer, product, new_supplier in action["reroute"]:
+            reroutes = action["reroute"]
+
+            # Apply policy interface constraints
+            if (self.shock_architecture_enabled and self.policy_layer is not None
+                    and len(reroutes) > 0):
+                reroutes = self.policy_layer.apply_reroute_constraints(reroutes, self.t)
+
+            for buyer, product, new_supplier in reroutes:
                 old_supplier = self.inputs2supplier.get((buyer, product))
                 self.inputs2supplier[(buyer, product)] = new_supplier
-
-                # Transfer pending orders from old supplier to new supplier
                 if old_supplier is not None and old_supplier != new_supplier:
                     old_key = (old_supplier, product)
                     new_key = (new_supplier, product)
@@ -544,8 +669,7 @@ class SupplySimEnv:
                     transferred = []
                     remaining = []
                     for order in old_orders:
-                        order_buyer = order[0]
-                        if order_buyer == buyer:
+                        if order[0] == buyer:
                             transferred.append(order)
                         else:
                             remaining.append(order)
@@ -553,6 +677,27 @@ class SupplySimEnv:
                     if new_key not in self.curr_orders:
                         self.curr_orders[new_key] = []
                     self.curr_orders[new_key].extend(transferred)
+
+                    # Reroute supply bonus: during shocks, rerouting activates
+                    # emergency supply from the new relationship. Bonus supply
+                    # goes directly to the new supplier's exog schedule.
+                    if (self.shock_architecture_enabled
+                            and self.arch_config.policy_interface.reroute_supply_bonus > 0
+                            and self.exog_schedule is not None
+                            and product in self.exog_prods):
+                        # Check if old supplier's product has shock severity
+                        old_supply = self.exog_schedule[self.t].get((old_supplier, product), 0)
+                        baseline = self.exog_baseline_supply.get(product, 1.0)
+                        if baseline > 0:
+                            # Compute per-firm share of baseline
+                            n_firms = len(self.prod2firms.get(product, []))
+                            per_firm_baseline = baseline / max(n_firms, 1)
+                            severity = max(0.0, 1.0 - old_supply / max(per_firm_baseline, 1.0))
+                            if severity > 0.1:
+                                bonus = self.arch_config.policy_interface.reroute_supply_bonus * severity
+                                new_key_supply = (new_supplier, product)
+                                if new_key_supply in self.exog_schedule[self.t]:
+                                    self.exog_schedule[self.t][new_key_supply] += int(bonus)
 
         if "supply_multiplier" in action and self.exog_schedule is not None:
             mults = action["supply_multiplier"]
@@ -574,24 +719,26 @@ class SupplySimEnv:
                 unit_cost = float(self.expedite_cost_per_unit.get(product, self.expedite_cost_default))
                 unit_cost = max(0.0, unit_cost)
                 if requested_delta <= 0:
-                    reduction_plans.append(
-                        {
-                            "key": key,
-                            "requested_supply": requested_supply,
-                        }
-                    )
+                    reduction_plans.append({"key": key, "requested_supply": requested_supply})
                 else:
-                    requested_cost = float(requested_delta * unit_cost)
-                    expedite_plans.append(
-                        {
-                            "key": key,
-                            "base_supply": base_supply,
-                            "requested_supply": requested_supply,
-                            "requested_delta": requested_delta,
-                            "unit_cost": unit_cost,
-                            "requested_cost": requested_cost,
-                        }
-                    )
+                    # Apply convex cost if policy layer active
+                    if (self.shock_architecture_enabled and self.policy_layer is not None
+                            and self.arch_config.policy_interface.expedite_convexity > 0):
+                        actual_units, cost = self.policy_layer.compute_expedite_cost(
+                            requested_delta, unit_cost, self.expedite_cost_t)
+                        requested_delta = int(actual_units)
+                        requested_supply = base_supply + requested_delta
+                        requested_cost = cost
+                    else:
+                        requested_cost = float(requested_delta * unit_cost)
+                    expedite_plans.append({
+                        "key": key,
+                        "base_supply": base_supply,
+                        "requested_supply": requested_supply,
+                        "requested_delta": requested_delta,
+                        "unit_cost": unit_cost,
+                        "requested_cost": requested_cost,
+                    })
 
             for plan in reduction_plans:
                 exog_t[plan["key"]] = int(plan["requested_supply"])
@@ -605,22 +752,19 @@ class SupplySimEnv:
 
             step_cost = 0.0
             step_units = 0.0
-
             for plan in expedite_plans:
                 base_supply = plan["base_supply"]
                 requested_supply = plan["requested_supply"]
                 requested_delta = plan["requested_delta"]
                 unit_cost = plan["unit_cost"]
                 requested_cost = plan["requested_cost"]
-
                 if unit_cost == 0:
-                    # Free expedite entries bypass the budget cap by design.
                     applied_supply = requested_supply
                     applied_cost = 0.0
                     applied_delta = requested_delta
                 elif alpha_scale < 1.0:
                     budget_i = alpha_scale * requested_cost
-                    applied_delta = int(np.floor(budget_i / unit_cost))
+                    applied_delta = int(np.floor(budget_i / unit_cost)) if unit_cost > 0 else 0
                     applied_delta = int(max(0, min(requested_delta, applied_delta)))
                     applied_supply = base_supply + applied_delta
                     applied_cost = float(applied_delta * unit_cost)
@@ -637,6 +781,5 @@ class SupplySimEnv:
             self.expedite_units_added_t += float(np.round(step_units, self.num_decimals))
             self.expedite_cost_t += float(np.round(step_cost, self.num_decimals))
             self.expedite_cost_cum += float(np.round(step_cost, self.num_decimals))
-
             if self.expedite_budget_remaining is not None:
                 self.expedite_budget_remaining = max(0.0, float(self.expedite_budget_remaining - step_cost))

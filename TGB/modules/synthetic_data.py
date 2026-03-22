@@ -123,14 +123,19 @@ def make_supplier_buyer_graph(firms, prod_graph, firm2prods, prod2firms, seed=0)
     return inputs2supplier
     
     
-def generate_static_graphs(seed=0):
+def generate_static_graphs(seed=0, num_inner_layers=2, num_per_layer=10,
+                            min_num_suppliers=2, max_num_suppliers=3,
+                            min_inputs=1, max_inputs=2, min_units=1, max_units=2):
     """
     Generate static graphs: product-product, firm-product, firm-firm.
     """
-    products, layer2prods, prod_pos, prod_graph = make_product_graph(seed=seed)
+    products, layer2prods, prod_pos, prod_graph = make_product_graph(
+        seed=seed, num_inner_layers=num_inner_layers, num_per_layer=num_per_layer,
+        min_inputs=min_inputs, max_inputs=max_inputs, min_units=min_units, max_units=max_units)
     # need to use distinct seed for generating firm pos; otherwise, some product pos and firm pos will be exactly the same
     firms, layer2firms, firm_pos, firm2prods, prod2firms = make_supplier_product_graph(
-        products, layer2prods, prod_pos, seed=seed+1)    
+        products, layer2prods, prod_pos, seed=seed+1,
+        min_num_suppliers=min_num_suppliers, max_num_suppliers=max_num_suppliers)
     inputs2supplier = make_supplier_buyer_graph(firms, prod_graph, firm2prods, prod2firms, seed=seed)
     return firms, products, prod_graph, firm2prods, prod2firms, inputs2supplier
     
@@ -143,8 +148,9 @@ def generate_initial_conditions(firms, products, prod_graph, prod2firms, init_in
     inventories = np.ones((len(firms), len(products))) * init_inv
     
     # initialize supply for exogenous products
-    exog_prods = set(prod_graph.source.values) - set(prod_graph.dest.values)  # exogenous products, has no inputs
-    assert sorted(exog_prods) == sorted(products[:len(exog_prods)])
+    # exogenous products = those with no inputs (not a dest in the product graph)
+    all_dests = set(prod_graph.dest.values)
+    exog_prods = set(p for p in products if p not in all_dests)
     exog_supp = {}  # maps (firm, product) to supply
     for p in exog_prods:
         for f in prod2firms[p]:
@@ -156,7 +162,7 @@ def generate_initial_conditions(firms, products, prod_graph, prod2firms, init_in
     for p in products:
         for f in prod2firms[p]:
             if p in consumer_prods and init_demand > 0:
-                curr_orders[(f,p)] = [('consumer', init_demand)]  # start with steady demand for consumer products
+                curr_orders[(f,p)] = [('consumer', init_demand, 0)]  # (buyer, amount, t_placed)
             else:
                 curr_orders[(f,p)] = []
             
@@ -274,7 +280,7 @@ def generate_transactions(num_timesteps, inventories, curr_orders, exog_supp,  #
             demand_schedule_t = demand_schedule[t]
             for p in consumer_prods:
                 for f in prod2firms[p]:
-                    curr_orders[(f, p)].append(('consumer', demand_schedule_t[(f,p)]))
+                    curr_orders[(f, p)].append(('consumer', demand_schedule_t[(f,p)], t))
         
         # get new transactions at time t
         transactions_t = []
@@ -317,7 +323,7 @@ def generate_transactions(num_timesteps, inventories, curr_orders, exog_supp,  #
                     s = np.random.choice(suppliers, p=probs)
                 else:
                     s = inputs2supplier[(f,p)]  # deterministic
-                curr_orders[(s, p)].append((f, inputs_needed[p_idx]))
+                curr_orders[(s, p)].append((f, inputs_needed[p_idx], t))
                 pending[f_idx, p_idx] += inputs_needed[p_idx]
                 
         num_orders = np.sum([len(v) for v in curr_orders.values()])
@@ -367,24 +373,24 @@ def simulate_actions_for_firm(f, inventories, curr_orders, exog_supp,  # time-va
             order_num = 0
             if np.sum(p_inputs) == 0:  # exogenous product
                 supply = exog_supp[(f,p)]
-                for buyer, amt in fp_orders:
+                for buyer, amt, *_ in fp_orders:
                     assert buyer != 'consumer'  # consumers don't buy exogenous products directly
                     bp_key = firm2idx[buyer], p_idx
                     if amt <= supply:
                         supply -= amt
                         amount_supplied[bp_key] = amount_supplied.get(bp_key, 0) + amt
-                        order_num += 1 
+                        order_num += 1
                     else:
                         break
             else:
-                for buyer, amt in fp_orders:
+                for buyer, amt, *_ in fp_orders:
                     order_inputs_needed = amt * p_inputs  # inputs required to complete order
                     if (inventories[f_idx] >= order_inputs_needed).all():  # need to have enough of all inputs
                         inventories[f_idx] -= order_inputs_needed  # subtract from inventory
                         if buyer != 'consumer':
                             bp_key = firm2idx[buyer], p_idx
                             amount_supplied[bp_key] = amount_supplied.get(bp_key, 0) + amt
-                        order_num += 1 
+                        order_num += 1
                     else:
                         break
             if debug:
@@ -392,7 +398,7 @@ def simulate_actions_for_firm(f, inventories, curr_orders, exog_supp,  # time-va
             curr_orders[(f,p)] = fp_orders[order_num:]
             
             # record what inputs are still needed for unfulfilled orders
-            remaining = np.sum([amt for buyer, amt in curr_orders[(f,p)]])
+            remaining = np.sum([amt for buyer, amt, *_ in curr_orders[(f,p)]])
             inputs_needed += remaining * p_inputs
                 
             if debug: 

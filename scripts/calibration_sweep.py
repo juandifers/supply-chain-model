@@ -132,20 +132,20 @@ def step1_find_default_supply(T=60, warmup_steps=15, seed=42):
 
 
 def step2_verify_shocks(default_supply, T=60, warmup_steps=15, seed=42):
-    """Verify shocks create real shortages at various shock_fraction values."""
+    """Verify shocks create real shortages at various shock_magnitude values."""
     print("\n" + "=" * 70)
     print("STEP 2: Verifying shocks create real shortages")
     print("=" * 70)
 
     results = []
-    for sf in [0.1, 0.2, 0.3, 0.5, 0.7]:
+    for sm in [0.1, 0.2, 0.3, 0.5, 0.7]:
         result = run_calibrated_policy(
             no_intervention_policy, "no_intervention", seed=seed,
-            T=T, default_supply=default_supply, shock_fraction=sf,
+            T=T, default_supply=default_supply, shock_magnitude=sm,
             shock_prob=0.15, firm_shock_fraction=0.5, warmup_steps=warmup_steps,
         )
         results.append((sf, result))
-        print(f"  shock_fraction={sf:.1f}  fill_rate={result['fill_rate']:.4f}  "
+        print(f"  shock_magnitude={sm:.1f}  fill_rate={result['fill_rate']:.4f}  "
               f"mean_fill={result['mean_fill_rate']:.4f}  backlog_AUC={result['backlog_auc']:,.0f}  "
               f"shocks={result['num_shocks']}")
 
@@ -162,7 +162,7 @@ def step3_verify_rerouting(default_supply, T=60, warmup_steps=15, seed=42):
 
     for fsf in [0.3, 0.5, 0.7, 1.0]:
         cal_kwargs = dict(
-            T=T, default_supply=default_supply, shock_fraction=0.3,
+            T=T, default_supply=default_supply, shock_magnitude=0.7,
             shock_prob=0.15, firm_shock_fraction=fsf, warmup_steps=warmup_steps,
         )
         no_int = run_calibrated_policy(
@@ -190,7 +190,7 @@ def step4_verify_expediting(default_supply, T=60, warmup_steps=15, seed=42):
     print("=" * 70)
 
     cal_kwargs = dict(
-        default_supply=default_supply, shock_fraction=0.3,
+        default_supply=default_supply, shock_magnitude=0.7,
         shock_prob=0.15, firm_shock_fraction=0.5, warmup_steps=warmup_steps,
     )
 
@@ -225,7 +225,7 @@ def step5_verify_policy_ordering(default_supply, T=60, warmup_steps=15,
     print("=" * 70)
 
     cal_kwargs = dict(
-        default_supply=default_supply, shock_fraction=0.3,
+        default_supply=default_supply, shock_magnitude=0.7,
         shock_prob=0.15, firm_shock_fraction=0.5, warmup_steps=warmup_steps,
         expedite_budget=expedite_budget,
     )

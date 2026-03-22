@@ -43,7 +43,7 @@ def _count_open_order_units(env, supplier, product):
     key = (supplier, product)
     if key not in env.curr_orders:
         return 0.0
-    return sum(float(amt) for _, amt in env.curr_orders[key])
+    return sum(float(amt) for _, amt, *_ in env.curr_orders[key])
 
 
 def _get_shock_severities(env, t):
@@ -82,7 +82,7 @@ def _count_consumer_orders_for_product(env, product):
     for f in env.prod2firms.get(product, []):
         key = (f, product)
         if key in env.curr_orders:
-            for buyer, _ in env.curr_orders[key]:
+            for buyer, _, *_ in env.curr_orders[key]:
                 if buyer == "consumer":
                     count += 1
     return count

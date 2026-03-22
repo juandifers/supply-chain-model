@@ -29,13 +29,13 @@ REROUTE_K = 3
 EXPEDITE_BUDGET = 50_000.0
 
 
-def run_policy_episode(policy_fn, default_supply, shock_prob, shock_fraction,
+def run_policy_episode(policy_fn, default_supply, shock_prob, shock_magnitude,
                        firm_shock_fraction, seed, recovery_rate=RECOVERY_RATE):
     """Run a single episode with a given policy."""
     env, obs, shock_log = create_calibrated_env(
         seed=seed,
         default_supply=default_supply,
-        shock_fraction=shock_fraction,
+        shock_magnitude=shock_magnitude,
         shock_prob=shock_prob,
         firm_shock_fraction=firm_shock_fraction,
         warmup_steps=WARMUP,
@@ -76,8 +76,8 @@ def make_policies():
 
 def main():
     REGIMES = [
-        {"name": "mild", "shock_prob": 0.10, "shock_fraction": 0.5, "firm_shock_fraction": 0.5},
-        {"name": "severe", "shock_prob": 0.20, "shock_fraction": 0.3, "firm_shock_fraction": 0.5},
+        {"name": "mild", "shock_prob": 0.10, "shock_magnitude": 0.5, "firm_shock_fraction": 0.5},
+        {"name": "severe", "shock_prob": 0.20, "shock_magnitude": 0.7, "firm_shock_fraction": 0.5},
     ]
     SEEDS = [0, 1, 2]
     policies = make_policies()
@@ -97,7 +97,7 @@ def main():
                     policy_fn,
                     default_supply=CALIBRATED_SUPPLY,
                     shock_prob=regime["shock_prob"],
-                    shock_fraction=regime["shock_fraction"],
+                    shock_magnitude=regime["shock_magnitude"],
                     firm_shock_fraction=regime["firm_shock_fraction"],
                     seed=seed,
                 )

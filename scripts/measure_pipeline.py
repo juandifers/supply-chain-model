@@ -26,7 +26,7 @@ def measure_pipeline():
     env, obs, _ = create_calibrated_env(
         seed=SEED,
         default_supply=UNLIMITED,
-        shock_fraction=1.0,  # No shock effect
+        shock_magnitude=0.0,  # No shock effect
         shock_prob=0.0,      # No shocks
         firm_shock_fraction=1.0,
         warmup_steps=0,
@@ -162,7 +162,7 @@ def binary_search_supply():
         env, obs, _ = create_calibrated_env(
             seed=SEED,
             default_supply=ds,
-            shock_fraction=1.0,
+            shock_magnitude=0.0,
             shock_prob=0.0,
             firm_shock_fraction=1.0,
             warmup_steps=0,

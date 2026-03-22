@@ -15,12 +15,12 @@ if ROOT not in sys.path:
 from scripts.calibrated_scenario import create_calibrated_env
 
 
-def run_episode(default_supply, shock_prob=0.0, shock_fraction=1.0,
+def run_episode(default_supply, shock_prob=0.0, shock_magnitude=0.0,
                 firm_shock_fraction=1.0, warmup_steps=10, T=60, seed=42,
                 recovery_rate=1.25, init_inv=0):
     env, obs, shock_log = create_calibrated_env(
         seed=seed, default_supply=default_supply,
-        shock_fraction=shock_fraction, shock_prob=shock_prob,
+        shock_magnitude=shock_magnitude, shock_prob=shock_prob,
         firm_shock_fraction=firm_shock_fraction, warmup_steps=warmup_steps,
         recovery_rate=recovery_rate, T=T, init_inv=init_inv,
     )
@@ -46,7 +46,7 @@ def escalation1_slow_recovery():
 
     for rr in [1.25, 1.10, 1.05, 1.02, 1.01]:
         r0 = run_episode(500_000, shock_prob=0.0, recovery_rate=rr)
-        r1 = run_episode(500_000, shock_prob=0.15, shock_fraction=0.3,
+        r1 = run_episode(500_000, shock_prob=0.15, shock_magnitude=0.7,
                         firm_shock_fraction=0.5, recovery_rate=rr)
         delta = (r1["backlog_auc"] - r0["backlog_auc"]) / max(r0["backlog_auc"], 1) * 100
         print(f"{rr:>10.2f} {r0['backlog_auc']:>14,.0f} {r1['backlog_auc']:>14,.0f} {delta:>8.1f}% {r0['fill_rate']:>8.4f} {r1['fill_rate']:>8.4f}")
@@ -62,7 +62,7 @@ def escalation1b_slow_recovery_400k():
 
     for rr in [1.25, 1.10, 1.05, 1.02, 1.01]:
         r0 = run_episode(400_000, shock_prob=0.0, recovery_rate=rr)
-        r1 = run_episode(400_000, shock_prob=0.15, shock_fraction=0.3,
+        r1 = run_episode(400_000, shock_prob=0.15, shock_magnitude=0.7,
                         firm_shock_fraction=0.5, recovery_rate=rr)
         delta = (r1["backlog_auc"] - r0["backlog_auc"]) / max(r0["backlog_auc"], 1) * 100
         print(f"{rr:>10.2f} {r0['backlog_auc']:>14,.0f} {r1['backlog_auc']:>14,.0f} {delta:>8.1f}% {r0['fill_rate']:>8.4f} {r1['fill_rate']:>8.4f}")
@@ -84,14 +84,14 @@ def escalation2_combined():
         print(f"{'0.00':>10} {'1.0':>5} {r0['fill_rate']:>10.4f} {baseline:>12,.0f}  baseline")
 
         for sp in [0.05, 0.10, 0.15, 0.20]:
-            r = run_episode(ds, shock_prob=sp, shock_fraction=0.3,
+            r = run_episode(ds, shock_prob=sp, shock_magnitude=0.7,
                           firm_shock_fraction=0.5, recovery_rate=1.05)
             delta = (r["backlog_auc"] - baseline) / max(baseline, 1) * 100
             print(f"{sp:>10.2f} {'0.3':>5} {r['fill_rate']:>10.4f} {r['backlog_auc']:>12,.0f}  ({delta:+.1f}%)")
 
         # Severity sweep
-        for sf in [0.1, 0.3, 0.5, 0.7]:
-            r = run_episode(ds, shock_prob=0.15, shock_fraction=sf,
+        for sm in [0.1, 0.3, 0.5, 0.7]:
+            r = run_episode(ds, shock_prob=0.15, shock_magnitude=sm,
                           firm_shock_fraction=0.5, recovery_rate=1.05)
             delta = (r["backlog_auc"] - baseline) / max(baseline, 1) * 100
             print(f"{'0.15':>10} {sf:>5.1f} {r['fill_rate']:>10.4f} {r['backlog_auc']:>12,.0f}  ({delta:+.1f}%)")
@@ -117,7 +117,7 @@ def escalation3_multi_seed_best():
         deltas = []
         for seed in range(8):
             r0 = run_episode(cfg["ds"], shock_prob=0.0, recovery_rate=cfg["rr"], seed=seed)
-            r1 = run_episode(cfg["ds"], shock_prob=0.15, shock_fraction=0.3,
+            r1 = run_episode(cfg["ds"], shock_prob=0.15, shock_magnitude=0.7,
                            firm_shock_fraction=0.5, recovery_rate=cfg["rr"], seed=seed)
             d = (r1["backlog_auc"] - r0["backlog_auc"]) / max(r0["backlog_auc"], 1) * 100
             deltas.append(d)

@@ -23,7 +23,7 @@ def main():
         seed=42,
         T=40,
         default_supply=50000,
-        shock_fraction=0.3,
+        shock_magnitude=0.7,
         shock_prob=0.15,
         recovery_rate=1.25,
         firm_shock_fraction=0.5,
@@ -56,10 +56,10 @@ def main():
 
     # 3. Verify proportional shocks
     print(f"\n3. PROPORTIONAL SHOCK CHECK:")
-    shock_supply = 50000 * 0.3
+    shock_supply = 50000 * (1 - 0.7)
     print(f"   default_supply = 50000")
-    print(f"   shock_fraction = 0.3")
-    print(f"   Expected shock_supply = {shock_supply:.0f} (= 50000 * 0.3)")
+    print(f"   shock_magnitude = 0.7")
+    print(f"   Expected shock_supply = {shock_supply:.0f} (= 50000 * (1 - 0.7))")
     # Check the exog schedule at a shock timestep
     if post_warmup_shocks:
         shock_t = post_warmup_shocks[0]["t"]

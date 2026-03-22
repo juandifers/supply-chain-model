@@ -25,7 +25,7 @@ import numpy as np
 # --- Calibrated config from quick_calibrate.py ---
 CONFIG = {
     "default_supply": 1e6,
-    "shock_fraction": 0.3,
+    "shock_magnitude": 0.7,
     "firm_shock_fraction": 0.7,
     "shock_prob": 0.1,
     "recovery_rate": 1.25,
@@ -54,7 +54,7 @@ def run_one(policy_fn, seed, config):
         seed=seed,
         T=config["T"],
         default_supply=config["default_supply"],
-        shock_fraction=config["shock_fraction"],
+        shock_magnitude=config["shock_magnitude"],
         shock_prob=config["shock_prob"],
         recovery_rate=config["recovery_rate"],
         firm_shock_fraction=config["firm_shock_fraction"],

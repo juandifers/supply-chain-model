@@ -1,460 +1,601 @@
-# Claude Code: Definitive Calibration Fix for SupplySim
+# Claude Code: Build SupplySim Disruption-Response Experiment Scripts
 
-## CONTEXT: Why We're Here
+## CONTEXT
 
-The simulation produces 4-8% improvement from graph-informed optimizer, but this improvement is **structural routing optimization, not disruption response**. The proof: no-intervention backlog AUC is IDENTICAL across all shock_prob values (108,456 for every shock_prob from 0.05 to 0.20). Shocks don't stress the system because supply far exceeds what the production pipeline can actually consume.
+The simulator has already been reworked and validated. Do not modify simulator mechanics.
 
-Previous calibration attempts failed because they guessed supply levels. This time we calibrate from first principles: **measure what the pipeline actually consumes, then set supply relative to that.**
+Validated changes already in place:
+- reroute transfers pending orders to the new supplier immediately
+- network depth reduced to 2 inner layers
+- suppliers per product reduced to 2–3
+- BOM fan-in / unit amplification reduced
+- supply-demand balance reworked
+- order expiry added
+- KPI warm-start added
 
-## PREREQUISITE: Read the Codebase
-
-Before any code changes:
-
-```bash
-cat CLAUDE.md
-cat scripts/calibrated_scenario.py
-cat scripts/supplysim_env.py
-# Understand how exog_schedule is built and consumed:
-grep -n "exog_schedule\|exog_supply\|supply_level\|consume\|fulfill\|produce" TGB/modules/synthetic_data.py | head -60
-grep -n "exog_schedule\|supply_mult\|exog" scripts/supplysim_env.py | head -40
+Current calibrated defaults:
+```
+num_inner_layers    = 2
+min_num_suppliers   = 2
+max_num_suppliers   = 3
+min_inputs          = 1
+max_inputs          = 2
+min_units           = 1
+max_units           = 1
+init_demand         = 10
+default_supply      = 100
+recovery_rate       = 1.05
+warmup_steps        = 10
+max_order_age       = 10
+kpi_start_step      = 4
+shock_prob          = 0.20
 ```
 
-Understand:
-- How does the simulator consume exogenous supply each timestep?
-- Is consumption = min(demand, available_supply)? Or is it drawn from a distribution?
-- Where in the step() function does exogenous supply get used?
-- What is the actual flow: exog_supply → firm inventory → production → orders → consumer?
+### shock_magnitude semantics (CRITICAL)
 
-Update CLAUDE.md with your findings before proceeding.
+`shock_fraction` has been renamed and its semantics inverted:
+```
+Old: shock_supply = default_supply * shock_fraction
+     shock_fraction=0.3 → supply drops TO 30% (70% reduction)
+
+New: shock_supply = default_supply * (1 - shock_magnitude)
+     shock_magnitude=0.7 → supply drops BY 70% (30% retained)
+```
+
+Value conversions (new = 1 − old):
+```
+shock_fraction=0.3  →  shock_magnitude=0.7   # same 70% reduction
+shock_fraction=0.5  →  shock_magnitude=0.5   # same 50% reduction
+shock_fraction=1.0  →  shock_magnitude=0.0   # no-shock baseline
+```
+
+Apply this consistently across all scripts, configs, JSON outputs, plot labels, and report text.
+If any existing script still uses `shock_fraction`, support it as a backward-compatible alias
+internally but always output `shock_magnitude` in results and plots.
 
 ---
 
-## PHASE 1: Measure the Pipeline (< 30 seconds)
+## EXISTING CODEBASE TO REUSE
 
-Create and run `scripts/measure_pipeline.py`:
+The file `scripts/run_regime_experiment.py` already exists and contains a working pattern.
+**Do not rewrite it. Inherit its structure for all new panel scripts.**
 
-```python
-"""
-GOAL: Determine the actual exogenous supply consumption rate of the pipeline.
-This is the calibration anchor — everything else is set relative to this number.
+Specifically, reuse and preserve:
+- `run_single_experiment(exp)` — the per-run worker function (picklable for multiprocessing)
+- `build_policy(name, K)` — policy factory
+- `save_result(result, output_path)` — append-to-CSV pattern (resumable)
+- `main()` structure — argparse, tqdm loop, multiprocessing pool, error log
+- CLI flags: `--seeds`, `--workers`, `--dry-run`, `--resume`, `--skip-policies`, `--output-dir`
 
-Run ONE episode with UNLIMITED supply (default_supply=10,000,000) and NO shocks.
-At each timestep, measure:
-1. How much exogenous supply was AVAILABLE per (firm, product)
-2. How much was actually CONSUMED (drawn into inventory/production)
-3. The difference (= wasted oversupply)
+Extract the shared logic into `scripts/experiment_utils.py`:
+- `run_single_experiment`
+- `build_policy`
+- `save_result`
+- `DEFAULTS` dict
+- any other helpers used across panel scripts
 
-The steady-state consumption rate (after warmup) is our calibration target.
-"""
-import numpy as np
+Each panel script then imports from `experiment_utils` and only defines:
+- its own config grid
+- its own `build_experiment_list`
+- its own post-run checks
 
-def measure_pipeline():
-    # Create env with massive supply, no shocks
-    env, obs, _ = create_calibrated_env(
-        seed=42,
-        default_supply=10_000_000,  # Effectively unlimited
-        shock_fraction=1.0,         # No shock effect
-        shock_prob=0.0,             # No shocks
-        firm_shock_fraction=1.0,
-        warmup_steps=0,             # We want to see the full ramp-up
-        T=60,
-        # ... other standard params
-    )
-    
-    consumption_by_step = []
-    
-    for t in range(60):
-        # BEFORE step: record exogenous supply available
-        # You need to find where this is stored — likely env.exog_schedule[t]
-        # or similar. Read the env code to find exact variable.
-        supply_before = {}  # {(firm, product): available_units}
-        
-        # Step with no intervention
-        obs, reward, done, info = env.step({"reroute": [], "supply_multiplier": {}})
-        
-        # AFTER step: measure what was consumed
-        # This might be: supply_before - remaining_supply
-        # Or it might be logged in transactions/info
-        # Or you might need to compute: inventory_increase + units_shipped_out
-        
-        # Record total exogenous consumption this step
-        total_consumed = ...  # Sum across all exogenous (firm, product) pairs
-        total_available = ... # Sum of what was in exog_schedule[t]
-        
-        consumption_by_step.append({
-            't': t,
-            'total_available': total_available,
-            'total_consumed': total_consumed,
-            'utilization': total_consumed / total_available if total_available > 0 else 0,
-        })
-        
-        if done:
-            break
-    
-    # Print results
-    print("\n=== PIPELINE CONSUMPTION PROFILE ===")
-    print(f"{'Step':>4} {'Available':>12} {'Consumed':>12} {'Utilization':>10}")
-    print("-" * 42)
-    for row in consumption_by_step:
-        print(f"{row['t']:>4} {row['total_available']:>12,.0f} {row['total_consumed']:>12,.0f} {row['utilization']:>10.4f}")
-    
-    # Steady-state consumption (average over steps 20-50, after ramp-up)
-    steady_state = consumption_by_step[20:50]
-    avg_consumption = np.mean([r['total_consumed'] for r in steady_state])
-    max_consumption = np.max([r['total_consumed'] for r in steady_state])
-    
-    print(f"\n=== CALIBRATION ANCHOR ===")
-    print(f"Steady-state avg consumption: {avg_consumption:,.0f} units/step")
-    print(f"Steady-state max consumption: {max_consumption:,.0f} units/step")
-    print(f"Number of exogenous (firm, product) pairs: {len(supply_before)}")
-    print(f"Avg consumption per (firm, product): {avg_consumption / max(len(supply_before), 1):,.0f}")
-    
-    # CALIBRATION RECOMMENDATIONS
-    # default_supply should be per (firm, product), so divide by num pairs
-    num_exog_pairs = len(supply_before)
-    per_pair_consumption = avg_consumption / max(num_exog_pairs, 1)
-    
-    print(f"\n=== RECOMMENDED SUPPLY LEVELS ===")
-    for overcapacity in [1.1, 1.2, 1.3, 1.5, 2.0]:
-        ds = int(per_pair_consumption * overcapacity)
-        print(f"  {overcapacity:.0%} overcapacity: default_supply = {ds:,}")
-        for sf in [0.3, 0.5, 0.7]:
-            shocked = int(ds * sf)
-            ratio = shocked / per_pair_consumption
-            status = "SHORTAGE" if ratio < 0.95 else "OK" if ratio < 1.05 else "SURPLUS"
-            print(f"    shock_fraction={sf}: shocked_supply={shocked:,} ({ratio:.1%} of need) [{status}]")
-
-if __name__ == "__main__":
-    measure_pipeline()
-```
-
-**CRITICAL: The exact implementation depends on how the env stores and consumes supply.** You MUST read `supplysim_env.py` and `TGB/modules/synthetic_data.py` to find:
-- Where exogenous supply is stored (likely `env.exog_schedule`)
-- How it's consumed during `step()` (look for inventory updates, production logic)
-- Whether consumption is deterministic or stochastic
-
-If you cannot directly measure consumption from env internals, use an INDIRECT approach:
-```python
-# Alternative: measure via inventory changes
-# If exogenous products go from supply → firm inventory → consumed by production
-# Then consumption ≈ supply_injected - inventory_increase_of_exog_products
-# Or consumption ≈ total_units_in_transactions for exogenous products
-```
-
-**STOP AFTER THIS PHASE.** Print results. Do not proceed until you have a consumption number you trust.
+**Do not duplicate `run_single_experiment` or `build_policy` across files.**
 
 ---
 
-## PHASE 2: Validate the Consumption Measurement (< 30 seconds)
+## GOAL
 
-Before using the consumption number for calibration, validate it makes sense:
+Write a self-contained experiment script suite that a researcher can run manually,
+one script at a time, to produce thesis-ready results.
 
-```python
-"""
-Sanity checks on the consumption measurement:
-1. Consumption should be roughly stable after warmup (not growing unboundedly)
-2. Consumption should be << available supply (since we gave unlimited supply)
-3. Consumption should be > 0 (pipeline is actually running)
-4. Consumption × T should be roughly proportional to total units in transactions
-"""
+**Do not run the experiments. Write the scripts only.**
 
-# Check 1: Stability
-std_consumption = np.std([r['total_consumed'] for r in steady_state])
-cv = std_consumption / avg_consumption
-print(f"Consumption coefficient of variation: {cv:.2%}")
-if cv > 0.5:
-    print("WARNING: Consumption is highly variable — steady state may not exist")
-    print("Try increasing warmup or T")
+Each script must:
+- be runnable standalone from the project root
+- print a `tqdm` progress bar showing panel, regime, seed, and policy
+- save all outputs to the correct folder on completion
+- be safe to re-run (`--resume` skips completed runs, `--overwrite` forces redo)
+- print a clear summary at the end: configs run, time elapsed, output location
 
-# Check 2: Utilization << 1 (confirming supply was truly unlimited)
-avg_util = np.mean([r['utilization'] for r in steady_state])
-print(f"Avg utilization: {avg_util:.4%}")
-if avg_util > 0.01:
-    print("WARNING: Utilization is too high — supply may not have been effectively unlimited")
-    print("Increase default_supply and re-run")
+---
 
-# Check 3: Non-zero
-if avg_consumption < 1:
-    print("ERROR: Pipeline is not consuming any exogenous supply")
-    print("Check if production logic is actually running")
+## DELIVERABLES
 
-# Check 4: Cross-reference with transactions
-total_tx_units = info.get('total_transaction_units', 'N/A')  # or compute from logs
-print(f"Total transaction units in episode: {total_tx_units}")
-print(f"Total consumption over episode: {sum(r['total_consumed'] for r in consumption_by_step):,.0f}")
+Write exactly these files:
+```
+scripts/experiment_utils.py      # shared logic extracted from run_regime_experiment.py
+scripts/preflight_check.py
+scripts/run_panel1.py
+scripts/run_panel2.py
+scripts/run_panel3.py
+scripts/run_panel4.py            # optional panel, still write the script
+scripts/analyze_and_plot.py
+scripts/generate_report.py
 ```
 
-**IF CONSUMPTION MEASUREMENT FAILS** (can't measure it directly), use this fallback:
+Do not modify:
+- `scripts/run_regime_experiment.py`
+- `scripts/supplysim_env.py`
+- `scripts/synthetic_data.py`
+- `scripts/calibrated_scenario.py`
 
+You may add `random_reroute` to `scripts/baseline_policies.py` if it is not present.
+Document any such addition clearly at the top of that file.
+
+---
+
+## PHASE 0: PREFLIGHT SCRIPT
+
+Write `scripts/preflight_check.py`.
+
+Checks to perform (in order):
+
+1. Import all modules: `supplysim_env`, `calibrated_scenario`, `baseline_policies`,
+   `graph_informed_optimizer`. Report PASS/FAIL per import.
+
+2. Verify `shock_magnitude` semantics:
+   - Instantiate env with `shock_magnitude=0.7`
+   - Confirm shocked supply = `default_supply * (1 - 0.7)` = 30% of baseline
+   - FAIL loudly if not
+
+3. Verify `shock_magnitude=0.0` produces a no-shock baseline (supply unchanged).
+
+4. Verify reroute transfer: confirm that rerouting moves pending orders
+   from old to new supplier.
+
+5. Verify KPI warm-start: confirm metrics only accumulate after `kpi_start_step`.
+
+6. Verify order expiry: confirm orders older than `max_order_age` are dropped.
+
+7. Verify matched scenarios: confirm same seed produces identical graphs,
+   shocks, and demand schedules across policy runs.
+
+8. Verify MIP: check it is importable and solves a trivial 1-step instance.
+   Record solve time. If unavailable, set `MIP_AVAILABLE=False` and continue —
+   all panel scripts must skip MIP gracefully when this flag is False.
+
+9. Smoke test: 2 seeds × 2 regimes × all 7 policies.
+   Confirm all required output fields are present, including delta metrics.
+
+10. Print final PASS/FAIL summary. Exit with code 1 if any check fails.
+
+---
+
+## POLICIES
+
+Run this comparator set in all panels:
+
+1. `no_intervention`
+2. `random_reroute` — uniform random selection from feasible reroute candidates.
+   If candidates are empty, do nothing. Add to `baseline_policies.py` if absent.
+3. `reroute_only`
+4. `expedite_only`
+5. `backlog_greedy`
+6. `graph_informed`
+7. `mip` — run on the full main grid. See MIP notes below.
+
+MIP notes:
+- If mean episode runtime > 10× mean `graph_informed` runtime on the smoke test,
+  emit a prominent warning but continue.
+- If MIP solve fails on any step, fall back to `no_intervention` for that step,
+  record the failure count in `mip_fallback_steps`, and continue rather than crashing.
+- If `MIP_AVAILABLE=False`, skip MIP in all panels and note it in `manifest.json`
+  and `report.md`.
+- All panel scripts accept `--no-mip` to skip MIP regardless of availability.
+
+---
+
+## METRICS
+
+Record for every (regime, seed, policy) triple:
+```
+backlog_auc
+fill_rate
+peak_backlog
+final_backlog
+lost_sales_units
+time_to_recovery     # steps until backlog <= baseline level; episode length if never
+runtime_s            # wall time for that episode
+mip_fallback_steps   # integer; 0 for non-MIP policies
+seed
+policy
+regime_id
+panel_name
+git_commit           # from `git rev-parse --short HEAD`, else "unknown"
+```
+
+Plus all regime parameters using `shock_magnitude`, never `shock_fraction`.
+
+### Delta metrics (MANDATORY)
+
+For every shocked regime, also run a matched no-shock baseline
+(`shock_prob=0`, `shock_magnitude=0.0`) using the same seed.
+
+Compute and save:
 ```python
-"""
-FALLBACK: Binary search for the supply level where fill rate transitions.
-If we can't measure consumption directly, we find it indirectly:
-the supply level where fill rate drops from ~1.0 to < 0.9 IS the consumption rate.
-"""
-# Run no-shock episodes with decreasing supply until fill rate drops
-for ds in [10_000_000, 1_000_000, 500_000, 200_000, 100_000, 50_000, 20_000, 10_000, 5_000, 2_000, 1_000, 500]:
-    result = run_episode(default_supply=ds, shock_prob=0.0, T=60, seed=42)
-    fill = result['mean_fill_rate']  # or however fill rate is computed
-    auc = result['backlog_auc']
-    print(f"default_supply={ds:>12,}  fill_rate={fill:.4f}  backlog_auc={auc:,.0f}")
+# Structural baseline (no-shock run)
+backlog_auc_base
+fill_rate_base
+peak_backlog_base
+lost_sales_base
 
-# The supply level where fill_rate first drops below 0.95 ≈ steady-state consumption per pair
-# Fine-tune with binary search around that level
+# Disruption damage
+delta_backlog_auc   = backlog_auc_shocked  - backlog_auc_base
+delta_fill_rate     = fill_rate_shocked    - fill_rate_base
+delta_peak_backlog  = peak_backlog_shocked - peak_backlog_base
+delta_lost_sales    = lost_sales_shocked   - lost_sales_base
+
+# Policy gain within shocked regime
+policy_gain_total   = backlog_auc(no_intervention) - backlog_auc(policy)
+policy_gain_pct     = policy_gain_total / backlog_auc(no_intervention)
+
+# Policy gain on disruption damage specifically
+policy_gain_on_damage = (
+    delta_backlog_auc(no_intervention) - delta_backlog_auc(policy)
+) / max(delta_backlog_auc(no_intervention), 1e-6)
+```
+
+Flag any regime where `delta_backlog_auc(no_intervention) < 500` as
+`disruption_too_mild = True`. Exclude those regimes from `policy_gain_on_damage`
+reporting and count how many were flagged.
+
+For MIP specifically, compute and save:
+```
+mip_vs_graph_informed_gap_pct = (
+    backlog_auc(mip) - backlog_auc(graph_informed)
+) / backlog_auc(no_intervention)
 ```
 
 ---
 
-## PHASE 3: Calibrate and Validate (< 2 minutes)
-
-Using the consumption measurement, set supply levels and verify the system behaves correctly:
-
-```python
-"""
-Set default_supply to ~1.2x steady-state consumption (slight overcapacity).
-Verify:
-1. No-shock fill rate is 0.85-0.95 (near capacity, not stressed)
-2. Shock at fraction=0.3 drops fill rate significantly (to 0.4-0.7)
-3. No-intervention backlog AUC INCREASES as shock_prob increases (shocks matter!)
-4. No-intervention backlog AUC INCREASES as shock_fraction decreases (severity matters!)
-"""
-
-# Use calibrated supply level from Phase 1
-CALIBRATED_SUPPLY = ...  # from Phase 1 recommendations, use 1.2x overcapacity
-
-# Test 1: No-shock fill rate
-result_noshock = run_episode(
-    default_supply=CALIBRATED_SUPPLY, shock_prob=0.0, 
-    warmup_steps=15, T=60, seed=42
-)
-print(f"No-shock fill rate: {result_noshock['mean_fill_rate']:.3f}")
-# TARGET: 0.85-0.95
-
-# Test 2: Shocked fill rate at different severities
-for sf in [0.3, 0.5, 0.7]:
-    result = run_episode(
-        default_supply=CALIBRATED_SUPPLY, shock_prob=0.15,
-        shock_fraction=sf, firm_shock_fraction=0.5,
-        warmup_steps=15, T=60, seed=42
-    )
-    print(f"shock_fraction={sf}: fill_rate={result['mean_fill_rate']:.3f}, backlog_auc={result['backlog_auc']:,.0f}")
-# TARGET: fill rate drops with lower shock_fraction
-
-# Test 3: THE CRITICAL TEST — does backlog change with shock_prob?
-for sp in [0.0, 0.05, 0.10, 0.15, 0.20]:
-    result = run_episode(
-        default_supply=CALIBRATED_SUPPLY, shock_prob=sp,
-        shock_fraction=0.3, firm_shock_fraction=0.5,
-        warmup_steps=15, T=60, seed=42
-    )
-    print(f"shock_prob={sp}: backlog_auc={result['backlog_auc']:,.0f}, fill_rate={result['mean_fill_rate']:.3f}")
-# TARGET: backlog_auc should INCREASE with shock_prob. If it's flat, calibration failed.
-
-# Test 4: Does shock severity matter?
-for sf in [0.1, 0.3, 0.5, 0.7, 0.9]:
-    result = run_episode(
-        default_supply=CALIBRATED_SUPPLY, shock_prob=0.15,
-        shock_fraction=sf, firm_shock_fraction=0.5,
-        warmup_steps=15, T=60, seed=42
-    )
-    print(f"shock_fraction={sf}: backlog_auc={result['backlog_auc']:,.0f}")
-# TARGET: backlog_auc should DECREASE with higher shock_fraction (milder shocks)
+## OUTPUT STRUCTURE
+```
+artifacts/experiments/rework_benchmark_YYYYMMDD_HHMM/
+├── manifest.json
+├── config_grid.json
+├── panel1/
+│   ├── per_run_results.csv
+│   ├── aggregated_results.csv
+│   ├── differentiation_report.txt
+│   ├── plots/
+│   └── tables/
+├── panel2/
+│   ├── per_run_results.csv
+│   ├── aggregated_results.csv
+│   ├── interpretation.md
+│   └── plots/
+├── panel3/
+│   ├── per_run_results.csv
+│   ├── aggregated_results.csv
+│   └── plots/
+├── panel4/
+│   ├── per_run_results.csv
+│   ├── aggregated_results.csv
+│   └── plots/
+└── report.md
 ```
 
-**PRINT ALL RESULTS AS A CLEAR TABLE. STOP AND EVALUATE BEFORE PROCEEDING.**
+Every row in `per_run_results.csv` must contain all regime parameters,
+all metrics, all delta metrics, and `git_commit`.
+
+All panel scripts accept `--output-dir` to override the default timestamped folder.
 
 ---
 
-## DECISION GATE: Did Calibration Work?
+## PANEL 1 — CORE BENCHMARK
 
-After Phase 3, evaluate results against these criteria:
+**Purpose:** headline thesis result — does graph_informed beat baselines,
+and under what structural conditions?
 
-### Gate A: SUCCESS — Proceed to Phase 4
-All of these must be true:
-- [ ] No-shock fill rate is 0.80-0.95
-- [ ] Backlog AUC increases monotonically with shock_prob (at least 20% increase from sp=0.0 to sp=0.20)
-- [ ] Backlog AUC increases monotonically with shock severity (lower shock_fraction = higher backlog)
-- [ ] Shocked fill rate at shock_fraction=0.3 is noticeably lower than no-shock fill rate
+Write `scripts/run_panel1.py`.
 
-If all pass → proceed to Phase 4 (pilot with policies).
-
-### Gate B: PARTIAL — Fill rate OK but shocks don't matter
-If no-shock fill rate is in range BUT backlog doesn't change with shock_prob:
-
-**Diagnosis:** Supply is still too high even at 1.2x. The pipeline adapts by building inventory buffers during no-shock periods that absorb the shocks.
-
-**Fix:** Reduce overcapacity factor. Try:
-```python
-for overcapacity in [1.05, 1.10, 1.15, 1.20]:
-    ds = int(per_pair_consumption * overcapacity)
-    # Re-run Tests 3 and 4
+### Grid
+```
+default_supply:       [50, 100, 150]
+firm_shock_fraction:  [0.3, 1.0]
+expedite_budget:      [0, 50000]
 ```
 
-The system needs to be running with very thin margins so that any supply reduction creates immediate backlog. If 1.05x still doesn't show shock sensitivity, move to Escalation Path 1.
-
-### Gate C: FAILURE — Can't find working supply level
-If no supply level produces both reasonable fill rate AND shock sensitivity:
-
-**Escalation Path 1: Reduce inventory buffering**
-
-The pipeline may be buffering supply into inventory during good periods, absorbing shocks. Check:
-```python
-# Measure inventory levels over time
-# If inventories grow during no-shock periods, the system is self-buffering
-for t in range(60):
-    obs, _, _, info = env.step(no_action)
-    total_inv = np.sum(env.inventories)  # or however inventories are accessed
-    print(f"t={t}: total_inventory={total_inv:,.0f}")
+Fixed:
+```
+shock_prob       = 0.15
+shock_magnitude  = 0.70
+recovery_rate    = 1.05
 ```
 
-If inventories are growing, consider:
-- Setting `init_inv=0` AND using a shorter warmup (so less time to build buffer)
-- Or: reduce the warmup_steps to 5-8 instead of 15, so the system barely reaches steady state before shocks hit
+3 × 2 × 2 = 12 shocked regimes.
+For each, run a matched no-shock baseline (`shock_prob=0`, `shock_magnitude=0.0`).
 
-**Escalation Path 2: Make shocks longer/harder to recover from**
+### Seeds
+20 per regime.
 
-If individual shock events are too brief to matter:
-```python
-# Reduce recovery_rate (slower recovery = longer disruptions)
-for rr in [0.5, 0.3, 0.1]:  # Lower = slower recovery
-    result = run_episode(
-        default_supply=CALIBRATED_SUPPLY, shock_prob=0.15,
-        shock_fraction=0.3, recovery_rate=rr, ...
-    )
-    print(f"recovery_rate={rr}: backlog_auc={result['backlog_auc']:,.0f}")
+### Progress bar format
+```
+[Panel 1] regime=tight_local_nobudget  seed=7  policy=graph_informed
+```
+For MIP runs add step solve time:
+```
+[Panel 1] regime=tight_systemic_budget  seed=3  policy=mip  | step_solve=0.43s
 ```
 
-Slower recovery means each shock persists for more timesteps, amplifying its impact.
+### Post-run differentiation check
 
-**Escalation Path 3: Increase demand relative to supply**
+After aggregation, evaluate each regime automatically. A regime passes if:
+- `delta_backlog_auc(no_intervention)` meaningfully > 0 (not disruption_too_mild)
+- `graph_informed` beats `no_intervention` by ≥ 10%
+- `reroute_only` and `expedite_only` differ materially from each other
+- policy rankings stable across seeds (Spearman rank correlation ≥ 0.8)
 
-Instead of reducing supply, increase demand:
-```python
-# Check if demand is configurable
-grep -n "demand\|init_demand\|consumer_demand\|poisson" TGB/modules/synthetic_data.py scripts/*.py
+Print per-regime results to stdout and save to `panel1/differentiation_report.txt`.
+
+If fewer than 4 regimes pass: print a diagnostic, save it, and exit with code 2.
+Do not proceed to further panels until the researcher reviews.
+
+MIP stop condition: if mean MIP runtime > 10× mean `graph_informed` runtime,
+print a prominent warning suggesting `--no-mip` for remaining panels.
+
+### Required analysis outputs
+
+For each regime, compute and save:
+- policy ranking by mean `backlog_auc`
+- `graph_informed` vs `no_intervention`: mean ± std improvement
+- `graph_informed` vs `backlog_greedy`: mean ± std improvement
+- `mip` vs `graph_informed` gap (`mip_vs_graph_informed_gap_pct`)
+- `reroute_only` vs `expedite_only` contrast
+- fraction of disruption-induced damage removed by each policy
+
+Label four named regimes in all outputs:
 ```
-
-If demand can be scaled up (e.g., multiplying the demand schedule by 2x), this effectively halves the supply-to-demand ratio without changing supply levels.
-
-**Escalation Path 4: Smaller network**
-
-If the amplification factor (2000-5000x from consumer to exogenous) is the core problem, use a smaller/shallower production graph:
-```python
-# Fewer layers = less amplification = tighter supply-demand coupling
-# Try: num_inner_layers=1 or 2 instead of default
-# Try: fewer products per layer
+tight_local_nobudget:    default_supply=50,  firm_shock_fraction=0.3, expedite_budget=0
+tight_systemic_budget:   default_supply=50,  firm_shock_fraction=1.0, expedite_budget=50000
+loose_local_nobudget:    default_supply=150, firm_shock_fraction=0.3, expedite_budget=0
+loose_systemic_budget:   default_supply=150, firm_shock_fraction=1.0, expedite_budget=50000
 ```
-
-This is a last resort because it changes the network structure, but a smaller network with clear shock sensitivity is better than a large network where shocks don't matter.
-
-**Escalation Path 5: Accept structural routing story**
-
-If after ALL escalation paths, shocks still don't create measurable backlog differences, then the simulator's architecture fundamentally prevents supply-limited operation at steady state. This is a valid finding. Reframe the thesis as graph-informed routing optimization on multi-tier supply networks, drop the disruption response framing, and use the existing 4-8% routing improvement results.
 
 ---
 
-## PHASE 4: Policy Pilot with Calibrated Params (< 2 minutes)
+## PANEL 2 — MECHANISM
 
-Only run this if Gate A passed.
+**Purpose:** understand *why* policies win — shock severity and recovery speed.
 
-```python
-"""
-Quick pilot: 4 key policies × 3 seeds × 2 contrasting regimes.
-Verify policy differentiation under proper calibration.
-"""
-REGIMES = [
-    {"name": "mild", "shock_prob": 0.10, "shock_fraction": 0.5, "firm_shock_fraction": 0.5},
-    {"name": "severe", "shock_prob": 0.20, "shock_fraction": 0.3, "firm_shock_fraction": 0.5},
-]
-POLICIES = ["no_intervention", "backlog_only_greedy", "graph_informed", "mip"]
-SEEDS = [0, 1, 2]
+Write `scripts/run_panel2.py`.
 
-results = []
-for regime in REGIMES:
-    for policy in POLICIES:
-        aucs = []
-        for seed in SEEDS:
-            result = run_policy(policy, {**regime, "default_supply": CALIBRATED_SUPPLY, ...}, seed)
-            aucs.append(result['backlog_auc'])
-        mean_auc = np.mean(aucs)
-        results.append({"regime": regime['name'], "policy": policy, "mean_auc": mean_auc, "std": np.std(aucs)})
+### Representative regimes
 
-# Print comparison table
-print("\n=== POLICY PILOT RESULTS ===")
-print(f"{'Regime':<10} {'Policy':<25} {'Mean AUC':>12} {'Std':>10}")
-for r in results:
-    print(f"{r['regime']:<10} {r['policy']:<25} {r['mean_auc']:>12,.0f} {r['std']:>10,.0f}")
+Accept `--regime-a` and `--regime-b` CLI arguments (regime_ids from Panel 1 output).
 
-# Key comparisons
-for regime_name in ["mild", "severe"]:
-    ni = [r for r in results if r['regime']==regime_name and r['policy']=='no_intervention'][0]
-    gi = [r for r in results if r['regime']==regime_name and r['policy']=='graph_informed'][0]
-    delta = (ni['mean_auc'] - gi['mean_auc']) / ni['mean_auc'] * 100
-    print(f"\n{regime_name}: graph_informed vs no_intervention = {delta:+.1f}%")
+Defaults if not provided:
+```
+Regime A (reroute-friendly):
+  default_supply=100, firm_shock_fraction=0.3, expedite_budget=0
 
-# CRITICAL: Compare mild vs severe for no_intervention
-ni_mild = [r for r in results if r['regime']=='mild' and r['policy']=='no_intervention'][0]
-ni_severe = [r for r in results if r['regime']=='severe' and r['policy']=='no_intervention'][0]
-regime_effect = (ni_severe['mean_auc'] - ni_mild['mean_auc']) / ni_mild['mean_auc'] * 100
-print(f"\nRegime effect on baseline: severe vs mild = {regime_effect:+.1f}%")
-print("(This MUST be positive and >10% — if not, shocks still don't matter)")
+Regime B (systemic + joint-control):
+  default_supply=100, firm_shock_fraction=1.0, expedite_budget=50000
 ```
 
-**Gate check:** 
-- Regime effect on baseline > 10%? → Shocks matter. Proceed to full experiment.
-- graph_informed beats no_intervention by > 10% in severe regime? → Optimizer works under stress. Proceed.
-- If either fails → go back to escalation paths.
+### Grid
+```
+shock_magnitude:  [0.50, 0.70, 0.85]
+recovery_rate:    [1.02, 1.05, 1.25]
+```
+
+Fixed: `shock_prob=0.15`
+
+2 regimes × 3 × 3 = 18 configs.
+
+### Seeds
+20 (reduce to 10 only if total runtime exceeds 2 hours).
+
+### Progress bar format
+```
+[Panel 2] regime=A  shock_mag=0.70  rr=1.05  seed=4  policy=graph_informed
+```
+
+### Required analysis outputs
+
+- `shock_magnitude` vs `policy_gain_pct` (one line per policy, per regime)
+- `recovery_rate` vs `policy_gain_pct` (one line per policy, per regime)
+- `mip` vs `graph_informed` gap across the sweep
+- `panel2/interpretation.md`: one paragraph per plot answering the mechanism question
 
 ---
 
-## PHASE 5: Update Experiment Scripts (DO NOT RUN)
+## PANEL 3 — ROBUSTNESS
 
-If Phase 4 passes, update `run_regime_experiment.py` and `run_calibration.py` with the new calibrated `default_supply` value. Update the regime grid to use `shock_fraction` as a primary axis (since it now produces actual variation in baseline backlog):
+**Purpose:** do rankings survive changes in disruption frequency?
 
-```python
-# Updated regime grid
-FIRM_SHOCK_FRACTIONS = [0.3, 0.5, 0.7, 1.0]
-SHOCK_FRACTIONS = [0.2, 0.4, 0.6, 0.8]  # Now these create real variation
-# shock_prob can be fixed at 0.15 or swept as secondary
+Write `scripts/run_panel3.py`.
+
+### Uses same two representative regimes as Panel 2.
+
+### Grid
+```
+shock_prob: [0.05, 0.15, 0.25]
 ```
 
-Print the user instructions for running the full experiment.
+Fixed:
+```
+shock_magnitude  = 0.70
+recovery_rate    = 1.05
+```
+
+### Seeds
+10 minimum; increase to 20 if rankings are unstable across seeds.
+
+### Progress bar format
+```
+[Panel 3] regime=A  shock_prob=0.15  seed=2  policy=reroute_only
+```
+
+### Required analysis outputs
+
+- Policy ranking stability across `shock_prob` levels
+- Does `graph_informed` retain its advantage over `backlog_greedy`?
+- Does MIP maintain its advantage at higher disruption frequency?
+- Flag any rank changes and note them in the output
 
 ---
 
-## PHASE 6: Print Final Calibration Report
+## PANEL 4 — BUDGET FRONTIER
 
-Regardless of which gate/path was taken, print a complete calibration report:
+**Purpose:** diminishing returns from expedite budget.
 
+Write `scripts/run_panel4.py`.
+
+### Uses same two representative regimes as Panels 2 and 3.
+
+### Grid
 ```
-============================================================
-CALIBRATION REPORT
-============================================================
-Pipeline steady-state consumption: X units/step
-Calibrated default_supply: Y per (firm, product)
-Overcapacity factor: Z
-
-No-shock fill rate: 0.XX
-Shocked fill rate (sf=0.3): 0.XX
-Shocked fill rate (sf=0.7): 0.XX
-
-Baseline backlog AUC (no shocks): X,XXX
-Baseline backlog AUC (sp=0.15, sf=0.3): X,XXX  (+XX%)
-Baseline backlog AUC (sp=0.15, sf=0.7): X,XXX  (+XX%)
-
-Policy differentiation (sp=0.15, sf=0.3, fsf=0.5):
-  no_intervention:    X,XXX
-  graph_informed:     X,XXX  (-XX% vs baseline)
-  backlog_only:       X,XXX  (-XX% vs baseline)
-  mip:                X,XXX  (-XX% vs baseline)
-
-VERDICT: [SUCCESS / PARTIAL / REFRAMED]
-RECOMMENDED REGIME GRID: [parameters]
-ESTIMATED FULL EXPERIMENT TIME: X hours with 4 workers
-
-Next steps:
-  [specific commands to run]
-============================================================
+expedite_budget: [0, 1000, 5000, 20000, 50000]
 ```
 
-Update CLAUDE.md with the calibration results and recommended parameters.
+Fixed:
+```
+shock_prob       = 0.15
+shock_magnitude  = 0.70
+recovery_rate    = 1.05
+```
+
+### Seeds
+10.
+
+### Progress bar format
+```
+[Panel 4] regime=B  budget=5000  seed=1  policy=mip  | step_solve=0.61s
+```
+
+### Key MIP analysis for this panel
+
+Compute and plot `policy_gain_pct` vs `expedite_budget` for MIP and `graph_informed`.
+Add a secondary axis showing `mip_gain / graph_informed_gain` ratio.
+This answers: does MIP extract more value per unit of budget?
+
+---
+
+## ANALYSIS AND PLOTTING SCRIPT
+
+Write `scripts/analyze_and_plot.py`.
+
+Reads all panel outputs. Skips missing panels gracefully.
+Runnable after any subset of panels.
+
+### Plots
+
+**Plot 1 — Heatmap (Panel 1)**
+- `graph_informed` improvement vs `no_intervention`
+- axes: `default_supply` × `firm_shock_fraction`
+- separate heatmaps for `expedite_budget=0` and `expedite_budget=50000`
+- second set: `mip` improvement and `mip vs graph_informed` gap
+
+**Plot 2 — Bar chart (Panel 1, 4 named regimes)**
+- all 7 policies, error bars = 1 std across seeds
+- secondary panel: `policy_gain_pct`
+
+**Plot 3 — Delta damage chart (Panel 1)**
+- disruption-induced damage removed by each policy
+- grouped bars for 4 named regimes
+- MIP bar as visible upper bound
+
+**Plot 4 — Mechanism plots (Panel 2)**
+- `shock_magnitude` vs `policy_gain_pct`, one line per policy, per regime
+- `recovery_rate` vs `policy_gain_pct`, one line per policy, per regime
+- annotate `mip vs graph_informed` gap at each point
+
+**Plot 5 — Robustness plot (Panel 3)**
+- `shock_prob` vs `policy_gain_pct` per regime
+- highlight any rank changes
+
+**Plot 6 — Budget frontier (Panel 4)**
+- `expedite_budget` vs `policy_gain_pct`
+- secondary axis: `mip_gain / graph_informed_gain` ratio
+
+### Tables
+
+Save to `panel1/tables/`:
+```
+table_A_regime_definitions.csv
+table_B_structural_baselines.csv
+table_C_shocked_outcomes.csv
+table_D_disruption_damage_deltas.csv
+table_E_policy_rankings.csv
+table_F_pairwise_comparisons.csv   # mip vs graph_informed is a mandatory pair
+```
+
+All headers use `shock_magnitude`, never `shock_fraction`.
+
+---
+
+## REPORT SCRIPT
+
+Write `scripts/generate_report.py`.
+
+Produces `report.md` with these sections:
+
+1. What was run (panels, policies, seeds, git commit)
+2. MIP availability and performance note
+3. Preflight fixes (any fixes applied before running — separate from results)
+4. Final regime grid
+5. Structural baseline summary
+6. Disruption damage summary
+7. Core policy comparison results — include `mip vs graph_informed` gap
+8. Mechanism findings
+9. Robustness findings
+10. Budget frontier findings (if Panel 4 was run)
+11. Key thesis-friendly takeaways
+12. Limitations
+13. Recommended regime family for headline thesis results
+14. one-page executive summary with the 3-4 key findings and the single best figure for the thesis.
+
+### Mandatory takeaways — the report must explicitly answer:
+
+- When do policies differentiate most?
+- When is rerouting the dominant lever?
+- When is expediting the dominant lever?
+- When does `graph_informed` provide extra value beyond `backlog_greedy`?
+- How close does `graph_informed` come to MIP optimality, and in which regimes
+  does the gap widen?
+- Which regime family should be used for the headline thesis results?
+
+---
+
+## STATISTICAL REQUIREMENTS
+
+- Use the same seeds across all policies within the same regime
+- Report means and standard deviations
+- Report 95% confidence intervals for main comparisons (bootstrap or t-interval)
+- Use paired differences across seeds for policy comparisons
+- If two policies differ by < 3% and CIs overlap, describe them as comparable —
+  do not overclaim
+- If MIP and `graph_informed` are within 3% on a regime, state that the greedy
+  approach closes the optimality gap in that regime
+
+---
+
+## PROGRESS BAR REQUIREMENTS
+
+Every panel script must use `tqdm`. Requirements:
+
+- One bar over the full run list for that panel
+- `set_description` updates with panel name, regime id, seed, policy
+- `set_postfix` updates with live metrics after each completed run:
+```
+  auc=12453  fill=0.87  elapsed=2.3s
+```
+- For MIP runs, also show `step_solve=Xs` in postfix
+- Bar format:
+```
+  [Panel N] |████████░░░░░░░░| 312/960 [04:12<08:33, 1.24run/s]
+```
+
+---
+
+## IMPLEMENTATION NOTES
+
+- Reuse `run_regime_experiment.py` structure — do not rewrite from scratch
+- Extract shared logic to `experiment_utils.py` — no duplication across panel scripts
+- Do not modify simulator mechanics
+- Any fix discovered during preflight must be documented in `report.md`
+  under "Preflight fixes" — separate from experiment results
+- All file I/O must be robust: create output dirs if missing, handle partial runs
+- Each panel script accepts `--output-dir`, `--no-mip`, `--resume`, `--overwrite`
+- Do not expand into a full factorial — keep design focused and interpretable

@@ -16,11 +16,11 @@ from scripts.graph_informed_optimizer import make_graph_informed_policy
 import numpy as np
 
 
-def run_config(seed, T, default_supply, shock_prob, shock_fraction, firm_shock_fraction,
+def run_config(seed, T, default_supply, shock_prob, shock_magnitude, firm_shock_fraction,
                warmup_steps, init_inv, expedite_budget, K, policy_fn=None):
     env, obs, shock_log = create_calibrated_env(
         seed=seed, T=T, default_supply=default_supply,
-        shock_fraction=shock_fraction, shock_prob=shock_prob,
+        shock_magnitude=shock_magnitude, shock_prob=shock_prob,
         recovery_rate=1.25, firm_shock_fraction=firm_shock_fraction,
         warmup_steps=warmup_steps, init_inv=init_inv,
         expedite_budget=expedite_budget, expedite_m_max=3.0,
@@ -72,9 +72,9 @@ def main():
     best_delta = 0
 
     for fsf, sp, K, eb in configs:
-        r_ni = run_config(seed, T, default_supply, sp, 0.3, fsf, warmup, init_inv, eb, K)
+        r_ni = run_config(seed, T, default_supply, sp, 0.7, fsf, warmup, init_inv, eb, K)
         gi = make_graph_informed_policy(reroute_budget_K=K)
-        r_gi = run_config(seed, T, default_supply, sp, 0.3, fsf, warmup, init_inv, eb, K, policy_fn=gi)
+        r_gi = run_config(seed, T, default_supply, sp, 0.7, fsf, warmup, init_inv, eb, K, policy_fn=gi)
 
         delta = (r_ni["auc"] - r_gi["auc"]) / max(r_ni["auc"], 1) * 100
         print(f"{fsf:8.1f}  {sp:5.2f}  {K:3d}  {eb:6.0f}  "
@@ -94,7 +94,7 @@ def main():
     print(f"\n{'=' * 90}")
     print("RECOMMENDED DEFAULTS:")
     print(f"  default_supply = {default_supply:.0f}")
-    print(f"  shock_fraction = 0.3")
+    print(f"  shock_magnitude = 0.7")
     print(f"  firm_shock_fraction = {best[0] if best else 0.5}")
     print(f"  shock_prob = {best[1] if best else 0.1}")
     print(f"  reroute_budget_K = {best[2] if best else 10}")

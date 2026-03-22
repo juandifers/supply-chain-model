@@ -13,14 +13,14 @@ if ROOT not in sys.path:
 from scripts.calibrated_scenario import create_calibrated_env
 
 
-def run_episode(default_supply, shock_prob=0.0, shock_fraction=1.0,
+def run_episode(default_supply, shock_prob=0.0, shock_magnitude=0.0,
                 firm_shock_fraction=1.0, warmup_steps=15, T=60, seed=42,
                 recovery_rate=1.25, init_inv=0):
     """Run a single episode and return summary stats."""
     env, obs, shock_log = create_calibrated_env(
         seed=seed,
         default_supply=default_supply,
-        shock_fraction=shock_fraction,
+        shock_magnitude=shock_magnitude,
         shock_prob=shock_prob,
         firm_shock_fraction=firm_shock_fraction,
         warmup_steps=warmup_steps,
@@ -75,23 +75,23 @@ def phase3_shock_sensitivity():
         print("-" * 50)
 
         # No shocks baseline
-        r = run_episode(ds, shock_prob=0.0, shock_fraction=1.0, warmup_steps=10)
+        r = run_episode(ds, shock_prob=0.0, shock_magnitude=0.0, warmup_steps=10)
         print(f"{'0.00':>10} {'1.0':>5} {r['fill_rate']:>10.4f} {r['backlog_auc']:>12,.0f} {r['num_shocks']:>8}")
         baseline_auc = r["backlog_auc"]
 
-        # Varying shock_prob with sf=0.3
+        # Varying shock_prob with sm=0.7
         for sp in [0.05, 0.10, 0.15, 0.20]:
-            r = run_episode(ds, shock_prob=sp, shock_fraction=0.3,
+            r = run_episode(ds, shock_prob=sp, shock_magnitude=0.7,
                            firm_shock_fraction=0.5, warmup_steps=10)
             delta = (r["backlog_auc"] - baseline_auc) / max(baseline_auc, 1) * 100
-            print(f"{sp:>10.2f} {'0.3':>5} {r['fill_rate']:>10.4f} {r['backlog_auc']:>12,.0f} {r['num_shocks']:>8}  ({delta:+.1f}%)")
+            print(f"{sp:>10.2f} {'0.7':>5} {r['fill_rate']:>10.4f} {r['backlog_auc']:>12,.0f} {r['num_shocks']:>8}  ({delta:+.1f}%)")
 
         # Varying shock severity with sp=0.15
-        for sf in [0.1, 0.3, 0.5, 0.7, 0.9]:
-            r = run_episode(ds, shock_prob=0.15, shock_fraction=sf,
+        for sm in [0.1, 0.3, 0.5, 0.7, 0.9]:
+            r = run_episode(ds, shock_prob=0.15, shock_magnitude=sm,
                            firm_shock_fraction=0.5, warmup_steps=10)
             delta = (r["backlog_auc"] - baseline_auc) / max(baseline_auc, 1) * 100
-            print(f"{'0.15':>10} {sf:>5.1f} {r['fill_rate']:>10.4f} {r['backlog_auc']:>12,.0f} {r['num_shocks']:>8}  ({delta:+.1f}%)")
+            print(f"{'0.15':>10} {sm:>5.1f} {r['fill_rate']:>10.4f} {r['backlog_auc']:>12,.0f} {r['num_shocks']:>8}  ({delta:+.1f}%)")
 
 
 def phase3_inventory_tracking():
@@ -102,7 +102,7 @@ def phase3_inventory_tracking():
 
     env, obs, _ = create_calibrated_env(
         seed=42, default_supply=400_000, shock_prob=0.0,
-        shock_fraction=1.0, warmup_steps=0, T=60,
+        shock_magnitude=0.0, warmup_steps=0, T=60,
         init_inv=0, init_supply=100, init_demand=1,
     )
     print(f"{'t':>4} {'total_inv':>12} {'exog_inv':>12} {'backlog':>12} {'fill_rate':>10}")
@@ -127,12 +127,12 @@ def phase3_multi_seed():
     print("\n" + "=" * 70)
     print("PHASE 3c: Multi-seed consistency (ds=400K)")
     print("=" * 70)
-    print(f"{'seed':>5} {'no-shock AUC':>14} {'sp=0.15 sf=0.3':>16} {'delta%':>8}")
+    print(f"{'seed':>5} {'no-shock AUC':>14} {'sp=0.15 sm=0.7':>16} {'delta%':>8}")
     print("-" * 48)
 
     for seed in range(5):
         r0 = run_episode(400_000, shock_prob=0.0, warmup_steps=10, seed=seed)
-        r1 = run_episode(400_000, shock_prob=0.15, shock_fraction=0.3,
+        r1 = run_episode(400_000, shock_prob=0.15, shock_magnitude=0.7,
                         firm_shock_fraction=0.5, warmup_steps=10, seed=seed)
         delta = (r1["backlog_auc"] - r0["backlog_auc"]) / max(r0["backlog_auc"], 1) * 100
         print(f"{seed:>5} {r0['backlog_auc']:>14,.0f} {r1['backlog_auc']:>16,.0f} {delta:>8.1f}%")

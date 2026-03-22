@@ -31,10 +31,10 @@ from scripts.graph_informed_optimizer import make_graph_informed_policy
 
 # --- Default grid ---
 FIRM_SHOCK_FRACTIONS = [0.3, 0.5, 0.7, 1.0]
-SHOCK_FRACTIONS = [0.2, 0.4, 0.6, 0.8]  # Primary severity axis
+SHOCK_MAGNITUDES = [0.2, 0.4, 0.6, 0.8]  # Primary severity axis (0.2 = mild 20% drop, 0.8 = severe 80% drop)
 SHOCK_PROBS = [0.05, 0.1, 0.15, 0.2]
 DEFAULT_SUPPLY = 500_000  # Calibrated: ~6x per-pair consumption (84K), transition zone
-SHOCK_FRACTION = 0.3
+SHOCK_MAGNITUDE = 0.7
 RECOVERY_RATE = 1.05     # Calibrated: slower recovery amplifies shock persistence
 WARMUP_STEPS = 10
 INIT_INV = 0
@@ -48,7 +48,7 @@ def run_calibration_point(seed, firm_shock_fraction, shock_prob):
     """Run no_intervention and graph_informed for one (fsf, sp, seed) combo."""
     common = dict(
         seed=seed, T=T, default_supply=DEFAULT_SUPPLY,
-        shock_fraction=SHOCK_FRACTION, shock_prob=shock_prob,
+        shock_magnitude=SHOCK_MAGNITUDE, shock_prob=shock_prob,
         recovery_rate=RECOVERY_RATE, firm_shock_fraction=firm_shock_fraction,
         warmup_steps=WARMUP_STEPS, init_inv=INIT_INV,
         expedite_budget=EXPEDITE_BUDGET, expedite_m_max=EXPEDITE_M_MAX,
@@ -151,7 +151,7 @@ def main():
                 "firm_shock_fraction": fsf,
                 "shock_prob": sp,
                 "default_supply": DEFAULT_SUPPLY,
-                "shock_fraction": SHOCK_FRACTION,
+                "shock_magnitude": SHOCK_MAGNITUDE,
                 "K": K,
                 "expedite_budget": EXPEDITE_BUDGET,
                 "warmup_steps": WARMUP_STEPS,
@@ -169,7 +169,7 @@ def main():
         "calibration_table": table,
         "fixed_params": {
             "default_supply": DEFAULT_SUPPLY,
-            "shock_fraction": SHOCK_FRACTION,
+            "shock_magnitude": SHOCK_MAGNITUDE,
             "recovery_rate": RECOVERY_RATE,
             "warmup_steps": WARMUP_STEPS,
             "init_inv": INIT_INV,

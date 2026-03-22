@@ -153,7 +153,7 @@ def _compute_open_orders_snapshots(env: SupplySimEnv) -> Tuple[Dict[int, float],
         per_firm_open_orders[s_idx] += float(len(orders))
 
         backlog = 0.0
-        for buyer, amount in orders:
+        for buyer, amount, *_ in orders:
             if buyer == "consumer":
                 backlog += float(amount)
         per_product_consumer_backlog[p_idx] += backlog
